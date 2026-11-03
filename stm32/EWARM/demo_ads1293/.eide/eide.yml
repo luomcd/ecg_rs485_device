@@ -31,6 +31,7 @@ virtualFolder:
                 - path: ${PROJ_DIR}/../Core/Src/stm32l4xx_hal_msp.c
                 - path: ${PROJ_DIR}/../Core/Src/stm32l4xx_it.c
                 - path: ${PROJ_DIR}/../Core/Src/vcomcmd.c
+                - path: ${PROJ_DIR}/../Core/Src/comm_port.c
               folders: []
             - name: Filter
               files:
@@ -92,6 +93,8 @@ virtualFolder:
             - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_spi_ex.c
             - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_tim.c
             - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_tim_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart_ex.c
             - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_ll_usb.c
           folders: []
     - name: Middlewares

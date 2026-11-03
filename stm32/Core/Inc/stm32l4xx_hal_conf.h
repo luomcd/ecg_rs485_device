@@ -79,7 +79,11 @@
 /*#define HAL_SWPMI_MODULE_ENABLED   */
 #define HAL_TIM_MODULE_ENABLED
 /*#define HAL_TSC_MODULE_ENABLED   */
-/*#define HAL_UART_MODULE_ENABLED   */
+/* ★T198（2026-11-03）：打开 UART 模块 —— UART5 通路上板必需。
+ *   打开后必须**同时**把 `stm32l4xx_hal_uart.c` 与 `stm32l4xx_hal_uart_ex.c`
+ *   加进 `EWARM/demo_ads1293/.eide/eide.yml`（该工程 `srcDirs: []` 是逐条枚举，
+ *   不是扫目录）⇒ 只开宏不加文件会在**链接期**报未定义符号。 */
+#define HAL_UART_MODULE_ENABLED
 /*#define HAL_USART_MODULE_ENABLED   */
 /*#define HAL_WWDG_MODULE_ENABLED   */
 /*#define HAL_EXTI_MODULE_ENABLED   */

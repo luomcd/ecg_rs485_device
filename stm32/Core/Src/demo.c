@@ -4,6 +4,7 @@
 #include "stdio.h"
 #include "stdbool.h"
 #include "usbd_cdc_if.h"
+#include "comm_port.h"
 #include "ads1293.h"
 #include "queue.h"
 #include "ecg_crc8.h"
@@ -37,8 +38,15 @@ void printf_msg(const char *format,...)
       //HAL_Delay(1);
     }
 #else
-    CDC_Transmit_FS(( uint8_t * )&buff[0], len); 
+    /* ★T198：改走通道抽象层。`comm_send()` **内部拷贝** ⇒ 这里的栈缓冲 `buff[256]`
+     *   可以照旧留在栈上（异步发送不会读到已复用的栈，技能 §4.48/§4.126）。 */
+    (void)comm_send((const uint8_t *)&buff[0], len);
+#if (ECG_COMM_PORT == ECG_COMM_PORT_USB)
+    /* 只有 USB 模式需要这个延时：CDC 单缓冲、无流控，连发时后一帧会覆盖前一帧的
+     * 在途缓冲（`CDC_Transmit_FS` 返回 BUSY 即丢）。UART5 模式由 `comm_send()`
+     * 自己的忙判 + 丢帧计数接管，**不能再加 5 ms 阻塞** —— 回显一多就把主循环拖垮。 */
     HAL_Delay(5);
+#endif
 #endif    
 }
 

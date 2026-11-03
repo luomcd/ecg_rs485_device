@@ -1,5 +1,6 @@
 #include "main.h"
 #include "usbd_cdc_if.h"
+#include "comm_port.h"   /* ★T198：通道抽象层 */
 #include "ads1293.h"
 #include "queue.h"
 #include "ecg_filter.h"
@@ -946,7 +947,9 @@ int ads1293_send_snapshot(uint8_t reqid, uint8_t *count)
     buff[5] = reqid;                                   /* REQID */
     buff[6] = n;                                       /* COUNT */
     buff[7u + 2u * n] = ecg_crc8((const uint8_t *)&buff[2], (uint32_t)(5u + 2u * n));
-    cret = CDC_Transmit_FS((uint8_t *)&buff[0], (uint16_t)(8u + 2u * n));
+    /* ★T198：改走 comm_send。返回 0=已受理（与 USBD_OK 同为 0）⇒ 下面
+     *   `cret == USBD_OK` 的判据语义不变。 */
+    cret = comm_send((const uint8_t *)&buff[0], (uint16_t)(8u + 2u * n));
 
     if (count != NULL) {
         *count = n;
@@ -1436,7 +1439,7 @@ void ads1293_raw_popoutput(void)
                 }
                 len += ret;
             }
-            CDC_Transmit_FS(( uint8_t * )&buff[0], len);
+            (void)comm_send((const uint8_t *)&buff[0], (uint16_t)len);
         }
         else
         {
@@ -1492,7 +1495,7 @@ void ads1293_raw_popoutput(void)
                 }
             }
             buff[8+nch*_popoutcnt*2] = ecg_crc8((const uint8_t*)&buff[2], (uint32_t)(6+nch*_popoutcnt*2));
-            CDC_Transmit_FS((uint8_t*)&buff[0], (uint16_t)(8+nch*_popoutcnt*2+1));
+            (void)comm_send((const uint8_t*)&buff[0], (uint16_t)(8+nch*_popoutcnt*2+1));
         }
     }
 }

@@ -22,6 +22,11 @@
 #include "stm32l4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+/* ★T198：需要 `ECG_COMM_PORT` 宏来守卫 UART5 中断入口（USB 模式下 huart5 不存在）。 */
+#include "comm_port.h"
+#if (ECG_COMM_PORT == ECG_COMM_PORT_UART5)
+extern UART_HandleTypeDef huart5;   /* 定义在 comm_port.c */
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -227,5 +232,17 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+#if (ECG_COMM_PORT == ECG_COMM_PORT_UART5)
+/* ★T198（2026-11-03）：UART5 全局中断入口。
+ *   为什么必须写在这里：`startup_stm32l476xx.s` 里的 `UART5_IRQHandler` 是 **weak
+ *   别名到 Default_Handler**（死循环）。没这个强符号时，只要 UART5 中断一使能，
+ *   第一条命令到达就会把 CPU 卡死在 Default_Handler —— 现象是"整板停了、DRDY 也没了"，
+ *   很容易被误判成电源/焊桥问题。 */
+void UART5_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart5);
+}
+#endif
 
 /* USER CODE END 1 */

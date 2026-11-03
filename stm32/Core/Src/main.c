@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+/* ★T198：通信通道抽象层。`ECG_COMM_PORT` 的唯一开关在 `comm_port.h`。 */
+#include "comm_port.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,9 +94,18 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI3_Init();
+  /* ★T198：USB OTG FS 与 UART5 **物理互斥** —— 模组内部
+   *   `RXD-USB_DP ≡ PA12 ≡ PD2`、`TXD-USB_DM ≡ PA11 ≡ PC12` 是同一根网络。
+   *   若两套外设都初始化，会在同一网络上两个推挽输出对驱。
+   *   ⇒ UART5 模式下 `MX_USB_DEVICE_Init()` **整个不调用**（不是"调了再关"）。 */
+#if (ECG_COMM_PORT == ECG_COMM_PORT_USB)
   MX_USB_DEVICE_Init();
+#endif
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  /* ★T198：通信通道初始化。必须在任何 `comm_send()`（含 `printf_msg`）之前。
+   *   UART5 模式下：开时钟/配 PC12·PD2 为 AF8/115200 8N1/使能中断/挂 IDLE 接收。 */
+  comm_init();
   demo_ads1293();
   /* USER CODE END 2 */
 

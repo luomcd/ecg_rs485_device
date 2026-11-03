@@ -57,6 +57,8 @@ void PendSV_Handler(void);
 void SysTick_Handler(void);
 void EXTI1_IRQHandler(void);
 void OTG_FS_IRQHandler(void);
+/* ★T198：UART5 中断入口（仅 UART5 模式下有定义；USB 模式下只有原型，不会被调用）。 */
+void UART5_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
