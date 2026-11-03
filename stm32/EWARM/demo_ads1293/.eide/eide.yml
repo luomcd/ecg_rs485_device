@@ -1,0 +1,193 @@
+version: "4.1"
+name: demo_ads1293
+type: ARM
+deviceName: null
+packDir: null
+srcDirs: []
+virtualFolder:
+  name: <virtual_root>
+  files: []
+  folders:
+    - name: Application
+      files: []
+      folders:
+        - name: EWARM
+          files:
+            - path: ${PROJ_DIR}/startup_stm32l476xx.s
+          folders: []
+        - name: User
+          files:
+            - path: ${PROJ_DIR}/../Core/Src/note.txt
+          folders:
+            - name: Ads1293
+              files:
+                - path: ${PROJ_DIR}/../Ads1293/ads1293.c
+              folders: []
+            - name: Core
+              files:
+                - path: ${PROJ_DIR}/../Core/Src/demo.c
+                - path: ${PROJ_DIR}/../Core/Src/main.c
+                - path: ${PROJ_DIR}/../Core/Src/queue.c
+                - path: ${PROJ_DIR}/../Core/Src/stm32l4xx_hal_msp.c
+                - path: ${PROJ_DIR}/../Core/Src/stm32l4xx_it.c
+                - path: ${PROJ_DIR}/../Core/Src/vcomcmd.c
+              folders: []
+            - name: Filter
+              files:
+                - path: ${PROJ_DIR}/../Filter/biquad.c
+                - path: ${PROJ_DIR}/../Filter/ecg_dc_block.c
+                - path: ${PROJ_DIR}/../Filter/ecg_filter.c
+                - path: ${PROJ_DIR}/../Filter/ecg_out.c
+                - path: ${PROJ_DIR}/../Filter/welch_autotune.c
+                - path: ../../Filter/ecg_crc8.c
+                - path: ../../Filter/fast_restore_snippet.c
+                - path: ../../Filter/biquad.h
+                - path: ../../Filter/ecg_crc8.h
+                - path: ../../Filter/ecg_dc_block.h
+                - path: ../../Filter/ecg_filter.h
+                - path: ../../Filter/ecg_filter_coeffs.h
+                - path: ../../Filter/ecg_out.h
+                - path: ../../Filter/welch_autotune.h
+              folders: []
+            - name: USB_DEVICE
+              files: []
+              folders:
+                - name: App
+                  files:
+                    - path: ${PROJ_DIR}/../USB_DEVICE/App/usb_device.c
+                    - path: ${PROJ_DIR}/../USB_DEVICE/App/usbd_cdc_if.c
+                    - path: ${PROJ_DIR}/../USB_DEVICE/App/usbd_desc.c
+                  folders: []
+                - name: Target
+                  files:
+                    - path: ${PROJ_DIR}/../USB_DEVICE/Target/usbd_conf.c
+                  folders: []
+    - name: Drivers
+      files: []
+      folders:
+        - name: CMSIS
+          files:
+            - path: ${PROJ_DIR}/../Core/Src/system_stm32l4xx.c
+          folders: []
+        - name: STM32L4xx_HAL_Driver
+          files:
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_dma.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_dma_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_exti.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_flash.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_flash_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_flash_ramfunc.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_pcd.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_pcd_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_pwr.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_pwr_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_rcc.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_rcc_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_spi.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_spi_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_tim.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_tim_ex.c
+            - path: ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_ll_usb.c
+          folders: []
+    - name: Middlewares
+      files: []
+      folders:
+        - name: USB_Device_Library
+          files:
+            - path: ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Src/usbd_cdc.c
+            - path: ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c
+            - path: ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c
+            - path: ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c
+          folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: 67e7a125bad5c7d7c4e15fa7583ab2a9
+targets:
+  demo_ads1293:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32L476xx
+      incList:
+        - ${PROJ_DIR}/../Core/Inc
+        - ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Inc
+        - ${PROJ_DIR}/../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy
+        - ${PROJ_DIR}/../Drivers/CMSIS/Device/ST/STM32L4xx/Include
+        - ${PROJ_DIR}/../Drivers/CMSIS/Include
+        - ${PROJ_DIR}/../USB_DEVICE/App
+        - ${PROJ_DIR}/../USB_DEVICE/Target
+        - ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Core/Inc
+        - ${PROJ_DIR}/../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc
+        - ${PROJ_DIR}/../Ads1293
+        - ${PROJ_DIR}/../Filter
+        - ../../Drivers/CMSIS/DSP/Include
+      libList: []
+    excludeList: []
+    settings: {}
+    toolchain: IAR_ARM
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M3
+        floatingPointHardware: none
+        options: ""
+        scatterFilePath: <YOUR_LINKER_SCRIPT>.lds
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+      IAR_ARM:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 1
+          afterBuildTasks: []
+          asm-compiler:
+            case-sensitive-user-symbols: true
+            defines: []
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            destroy-cpp-static-object: true
+            floating-point-semantics: strict
+            language-c: c99
+            language-conformance: IAR-extensions
+            misc-controls: ""
+            optimization: size
+          global:
+            endian-mode: little
+            output-debug-info: enable
+            printf-formatter: auto
+            runtime-lib: full
+            scanf-formatter: auto
+          linker:
+            $outputTaskExcludes:
+              - .bin
+            LIB_FLAGS: []
+            auto-search-runtime-lib: true
+            config-defines: []
+            misc-controls: ""
+            output-format: elf
+            perform-cpp-virtual-func-elimination: enable
+        scatterFilePath: ${PROJ_DIR}/stm32l476xx_flash.icf
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+    uploader: JLink

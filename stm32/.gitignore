@@ -9,8 +9,16 @@
 /bin
 /obj
 /out
-/EWARM/demo_ads1293
 /EWARM/settings
+# 🛑 2026-11-03：EIDE 工程目录不能整目录排除 —— `.eide/eide.yml` 才是**真实构建定义**
+# （srcDirs: [] 逐条枚举源文件，`.ewp` 反而缺 ecg_crc8.c / fast_restore_snippet.c）。
+# 整目录排除 ⇒ 克隆下来无法重建工程。故改为：排内容、留 eide.yml。
+# env.ini 含本机绝对路径（PROJ_PATH），属机器本地态，继续忽略。
+/EWARM/demo_ads1293/*
+!/EWARM/demo_ads1293/.eide/
+/EWARM/demo_ads1293/.eide/*
+!/EWARM/demo_ads1293/.eide/eide.yml
+!/EWARM/demo_ads1293/.eide/files.options.yml
 /Drivers
 /Middlewares
 /USB_DEVICE
