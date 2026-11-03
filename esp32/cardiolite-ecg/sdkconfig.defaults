@@ -1,0 +1,106 @@
+# ============================================================================
+# CardioLite 显示终端 —— sdkconfig.defaults（S0 定死版，2026-10-23）
+#
+# 基线来自 lcd-bringup/sdkconfig.defaults（2026-10-22 实测点亮 800x480 + GT911）。
+# 相对基线的**全部改动**只有下面标 [CHG] / [ADD] 的几处，其余逐字保留。
+#
+# 🛑 这是全项目唯一允许改 sdkconfig 的时机。
+#    改任何一项 = ccache 全 miss = 全量重编 40~50 min（2026-10-22 实测）。
+# ============================================================================
+
+# ---------- 目标芯片与时钟 ----------
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+# FreeRTOS tick = 1 ms —— 500 Hz 样本节拍（2 ms）需要它，别改成 100
+
+# ---------- Flash ----------
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# ---------- PSRAM（OCT 8 MB @80 MHz，XIP）----------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_SPIRAM_MEMTEST=n
+CONFIG_SPIRAM_RODATA=y
+# [ADD] 显式声明：malloc 走 PSRAM。LVGL 的 LV_MEM_CUSTOM 与波形画布都依赖它。
+#       （IDF 默认即为 SPIRAM_USE_MALLOC，此处写明防止后来者误改）
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# ---------- Cache ----------
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE=64
+
+# ---------- 控制台 ----------
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ---------- 分区表 ----------
+# factory 4 MB（不是 IDF 单 app 默认的 1 MB），为 LVGL 图片与中文字库留余量。
+# 布局与厂家出厂固件一致（2026-10-22 从实机 0x8000 读出）。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# ---------- 编译器优化 [ADD] ----------
+# IDF 默认 -Og（DEBUG），对心电图逐点绘制偏慢。改 -O2。
+# 本项目核心指标是渲染帧率，用 -Og 测出来的数字不代表最终状态。
+# ⚠ 只在 S0 设一次；中途改 = 全量重编。
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ---------- 应用入口 [ADD] ----------
+# app_main 要初始化 BSP + adapter + 建界面，默认 3584 B 偏紧。
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# ---------- LVGL 显示适配 ----------
+# ⚠ 本工程**故意不定义**下面两个选项，它们在本工程里无效，写了只会误导后来者：
+#
+#   CONFIG_EXAMPLE_LVGL_PORT_TASK_CORE
+#       这是**厂家 demo 的 Kconfig**（定义在 lcd-bringup/main/Kconfig.projbuild）。
+#       esp_lvgl_adapter 不读它，lcd-bringup/main.c 也从未引用 ⇒ 死配置。
+#       LVGL 任务核归属改由 main.c 里 adapter_config.task_core_id = 0 显式设置
+#       （adapter 默认值为 -1 = tskNO_AFFINITY，不设会任意落核）。2026-10-23 查证。
+#
+#   CONFIG_EXAMPLE_LVGL_PORT_AVOID_TEAR_ENABLE
+#       同上，也是死配置。抗撕裂模式由 esp_lv_adapter_display.h:74 硬编码为
+#       ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_PARTIAL ⇒ **三缓冲**
+#       （display_manager.c:1430-1432 返回 3），不可经 sdkconfig 改变。
+#       ★ 三缓冲意味着 framebuffer 占 800*480*2*3 = 2,304,000 B，不是双缓冲的 1,536,000 B。
+
+# ---------- LVGL 内核 ----------
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_MEMCPY_MEMSET_STD=y
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+
+# ---------- LVGL 字体 ----------
+# 10 / 12 / 13 / 14 px 的中文文案由自建子集字库提供（需求 v1.2 §7，S6 生成），
+# 这里只保留 Montserrat 的 ASCII 档位：30 px 供 BPM 数字（需求定稿），
+# 20 px 供 S0 调试页与后续英文标签。
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+# [ADD] BPM 数字用 30 px（需求 v1.2 §7「BPM 数字 Montserrat 30」）
+CONFIG_LV_FONT_MONTSERRAT_30=y
+
+# ---------- LVGL demo [CHG] ----------
+# [CHG] 关掉 widgets demo：UI 工程不需要，省 flash 与链接时间。
+# CONFIG_LV_USE_DEMO_WIDGETS is not set
+
+# ---------- 明确关闭的可选项（与基线一致，写明以防被意外打开）----------
+# CONFIG_LV_COLOR_SCREEN_TRANSP is not set
+# CONFIG_LV_USE_LOG is not set
+# CONFIG_LV_LOG_PRINTF is not set
+# CONFIG_LV_USE_PERF_MONITOR is not set
+# CONFIG_LV_USE_FONT_COMPRESSED is not set
+# CONFIG_LV_USE_IMGFONT is not set
+# CONFIG_LV_USE_DEMO_BENCHMARK is not set
+# CONFIG_LV_USE_DEMO_STRESS is not set
+# CONFIG_LV_USE_DEMO_MUSIC is not set
+# CONFIG_LV_DEMO_MUSIC_AUTO_PLAY is not set

@@ -1,0 +1,36 @@
+# dot files
+/.vscode/launch.json
+/.settings
+/.eide/log
+/.eide.usr.ctx.json
+
+# project out
+/build
+/bin
+/obj
+/out
+/EWARM/demo_ads1293
+/EWARM/settings
+/Drivers
+/Middlewares
+/USB_DEVICE
+#/tools
+/tools/*.txt
+
+# tools 下自检工程（C#/.NET）的构建产物 —— 可再生，不入库（2026-10-08）
+# ⚠ 只忽略 bin/obj，不动 tools/_tNNN/ 下的源码、数据与 .blk 等产物
+/tools/**/bin/
+/tools/**/obj/
+
+# eide template
+*.ept
+*.eide-template
+*.ioc
+.mxproject
+
+# Python 字节码缓存（2026-11-03 补：此前 __pycache__/*.pyc 被误入库）
+__pycache__/
+*.pyc
+
+# 项目记忆/会话数据（跟随工程，不进版本库）
+/.workbuddy/

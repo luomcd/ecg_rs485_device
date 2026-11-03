@@ -1,0 +1,30 @@
+# ============================================================================
+# ecg_rs485_device 根级忽略规则（2026-11-03）
+# stm32/ 下另有自己的 .gitignore（沿用老工程），本文件只管根级与 esp32/。
+# ============================================================================
+
+# --- 通用构建产物（可再生） ---
+**/build/
+**/.obj/
+**/__pycache__/
+*.pyc
+
+# --- EIDE / IAR 中间物 ---
+**/.eide/log/
+**/*.map.old
+**/.lock
+
+# --- ESP-IDF ---
+esp32/cardiolite-ecg/managed_components/
+esp32/cardiolite-ecg/sdkconfig.old
+esp32/cardiolite-ecg/dependencies.lock
+
+# --- 项目记忆 / 编辑器本地态 ---
+**/.workbuddy/
+**/.vscode/launch.json
+**/.vscode/settings.json
+
+# --- 系统垃圾 ---
+.DS_Store
+Thumbs.db
+desktop.ini

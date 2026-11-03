@@ -1,0 +1,16 @@
+﻿# CardioLite 分区表 —— 与厂家出厂固件布局对齐（2026-10-22 从实机 0x8000 读出）
+#
+# 对齐理由：
+#   1. factory 起始偏移 0x10000 与厂家一致，任何 bootloader 都能找到 app
+#   2. factory 给 4 MB（IDF 单 app 默认只有 1 MB），为 LVGL 图片/中文字库留余量
+#   3. 保留厂家原有的 storage(spiffs) 1 MB，出厂资源区不改动
+#   4. 0x510000 之后的约 11 MB 暂不分配，等 UI 资源需求明确后再扩
+#
+# ⚠ 本文件与 lcd-bringup/partitions.csv 逐字节一致。改它 = 改 flash 布局 = 必须重烧，
+#   且 sdkconfig 里的 PARTITION_TABLE_CUSTOM_FILENAME 会触发全量重编（40~50 min）。
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x400000,
+storage,  data, spiffs,  0x410000, 0x100000,

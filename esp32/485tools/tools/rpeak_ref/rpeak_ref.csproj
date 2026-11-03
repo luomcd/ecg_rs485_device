@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>rpeak_ref</AssemblyName>
+    <RootNamespace>rpeak_ref</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 直接链接 WinApp 里的检测器源码，保证是"同一份实现"。
+         ★2026-10-27：原本是绝对路径 C:/work2026/VsPro/WinApp_ADSECG/ADS1293_Ecg/...，
+         换机器就废。WinApp 已作为 git submodule 挂在本仓 winapp/，故改相对路径。
+         🛑 只 clone 本仓而没初始化 submodule 时 winapp/ 为空 ⇒ 此处会编译失败，
+            补跑 submodule 初始化即可（命令见仓库 README 的「submodule」一节）。 -->
+    <Compile Include="../../winapp/Processing/HeartRateDetector.cs"
+             Link="HeartRateDetector.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="StubConfig.cs" />
+  </ItemGroup>
+</Project>

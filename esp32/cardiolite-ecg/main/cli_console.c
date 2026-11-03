@@ -1,0 +1,1458 @@
+/**
+ * @file cli_console.c
+ * @brief CLI 测试模式命令台实现
+ *
+ * 命令集（共 17 条，按阶段分组）：
+ *
+ *   S1 骨架/状态
+ *     status        打印当前模式与 UI 按钮状态
+ *     test-mit      进入 MIT-BIH 测试模式（禁用 UI 按钮）
+ *     test-ladder   进入心率阶梯测试模式（禁用 UI 按钮）
+ *     test-exit     退出测试模式，回到 NORMAL（恢复 UI 按钮）
+ *     log           开/关串口日志级别（off/error/warn/info/debug/verbose）
+ *     restart       软重启（登记批处理后用它触发）
+ *     help          内建命令帮助（esp_console_register_help_command）
+ *
+ *   S2 全速批处理
+ *     mit-run-all     登记跑 /sdcard/batch_mit.txt（重启后跑）
+ *     ladder-run-all  登记跑 /sdcard/batch_ladder.txt（重启后跑）
+ *
+ *   S3 回放对账
+ *     mit-run <rec> [gain] [--speed N]      单条回放（有波形，峰序列落盘 SD）
+ *     ladder-run <bpm> [gain] [--speed N]   单档阶梯回放
+ *     run-stop                              停止回放并收尾落盘
+ *     result-dump <stem>                    按需回传结果文件到串口
+ *
+ *   S4 SD 扫描 / 写清单
+ *     scan           递归列全卡 *.bin（含大小）
+ *     mit-list       列 MIT 记录（扫根目录与 s7_batch/）
+ *     ladder-list    列心率阶梯档位
+ *     mit-set <csv>|all      写 /sdcard/batch_mit.txt
+ *     ladder-set <csv>|all   写 /sdcard/batch_ladder.txt
+ *
+ *   S9a 485 实时源（真机路线第一段：PC/STM32 → RS485 → ESP32）
+ *     485-start [baud]  启动 485 源（停掉当前 SD 回放；默认 115200）
+ *     485-stop          停止 485 源，回到上电默认（SD 回放暂停态）
+ *     485-stat          链路/解帧/环缓/心率统计（对账用）
+ */
+
+#include "cli_console.h"
+
+#include <ctype.h>
+#include <dirent.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "esp_console.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "argtable3/argtable3.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "esp_lv_adapter.h"
+
+#include "app_config.h"
+#include "test_mode.h"
+#include "storage/storage_sd.h"
+#include "ecg/ecg_pipeline.h"
+#include "rs485_port.h"
+#include "ui/ui_waveform.h"
+#include "ui/ui_button_bar.h"
+
+static const char *TAG = "cli";
+
+#define PROMPT_STR "cardiolite"
+
+/* ============================================================================
+ * 命令实现
+ * ========================================================================== */
+
+/* ---- status ---- */
+static int cmd_status(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    const test_mode_t m = test_mode_get();
+    const bool ui_enabled = (m == TEST_NORMAL);
+
+    printf("mode: %s\n", test_mode_name(m));
+    printf("ui-buttons: %s\n", ui_enabled ? "enabled" : "disabled");
+
+    return 0;
+}
+
+/* ---- test-mit ---- */
+static int cmd_test_mit(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    test_mode_set(TEST_MIT);
+    printf("进入 MIT-BIH 测试模式，UI 按钮已禁用（UI 仅作波形展示）。\n");
+    printf("退出请用 test-exit。\n");
+
+    return 0;
+}
+
+/* ---- test-ladder ---- */
+static int cmd_test_ladder(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    test_mode_set(TEST_LADDER);
+    printf("进入心率阶梯测试模式，UI 按钮已禁用（UI 仅作波形展示）。\n");
+    printf("退出请用 test-exit。\n");
+
+    return 0;
+}
+
+/* ---- test-exit ---- */
+static int cmd_test_exit(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    test_mode_set(TEST_NORMAL);
+    printf("已退出测试模式，UI 按钮恢复。\n");
+
+    return 0;
+}
+
+/* ---- mit-run-all / ladder-run-all：登记全速批处理（解法 A）----
+ * 写 SD 标记文件 `/sdcard/batch_pending.flag`（内容=清单文件名），
+ * 用户重启后 LVGL 之前自动跑对应清单，跑完删标记。
+ * 清单分两份：`batch_mit.txt`（只 MIT）/ `batch_ladder.txt`（只阶梯）。
+ *
+ * 🛑 登记前必须**先数清单行数**：清单不存在或为空时照样写标记，重启后就会
+ *    `BATCH-END ok=0` 一条都不跑 —— 这是"静默少跑"的典型来源。数出来一并报给用户，
+ *    别再硬写档数（原来 `ladder-run-all` 固定打"8 档"，清单只有 2 条时完全误导）。 */
+static int cli_count_manifest(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return -1;
+    }
+    int n = 0;
+    char line[160];
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (line[0] != '#' && line[0] != '\n' && line[0] != '\r') {
+            n++;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+static int cmd_mit_run_all(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载，无法登记。\n");
+        return 1;
+    }
+    const int n = cli_count_manifest("/sdcard/batch_mit.txt");
+    if (n <= 0) {
+        printf("🛑 /sdcard/batch_mit.txt 不存在或为空 —— 未登记（否则重启后一条都不跑）。\n");
+        printf("   先用 mit-set all 或 mit-set <a,b,c> 写清单。\n");
+        return 1;
+    }
+    test_mode_set_batch("batch_mit.txt");
+    printf("已登记：重启后将全速跑 /sdcard/batch_mit.txt（%d 条 MIT 记录）。\n", n);
+    printf("请重启（restart 命令或断电重上电）。\n");
+
+    return 0;
+}
+
+static int cmd_ladder_run_all(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载，无法登记。\n");
+        return 1;
+    }
+    const int n = cli_count_manifest("/sdcard/batch_ladder.txt");
+    if (n <= 0) {
+        printf("🛑 /sdcard/batch_ladder.txt 不存在或为空 —— 未登记（否则重启后一条都不跑）。\n");
+        printf("   先用 ladder-set all 或 ladder-set <a,b,c> 写清单。\n");
+        return 1;
+    }
+    test_mode_set_batch("batch_ladder.txt");
+    printf("已登记：重启后将全速跑 /sdcard/batch_ladder.txt（%d 条）。\n", n);
+    printf("请重启（restart 命令或断电重上电）。\n");
+
+    return 0;
+}
+
+/* ============================================================================
+ * S4：SD 扫描 + 写清单
+ *
+ * 为什么需要：清单原本只能由 PC 端 `tools/make_sdcard_batch.py` 生成。拔卡改了文件、
+ * 或只想跑其中几条，就得回 PC 重做一遍 —— 而板子上明明能自己看、自己写。
+ *
+ * 目录约定：载荷既可能在 `/sdcard/` 根，也可能在 `/sdcard/s7_batch/`（PC 工具的 SD_SUB）。
+ * **两处都扫、都认**，顺序固定「根 → s7_batch」，与 `mit-run` 的探测顺序一致；同名去重时根优先。
+ *
+ * 清单格式：`#` 注释行跳过，其余**每行一个绝对路径**（`ecg_batch.c:run_one()` 直接 `fopen` 该行）。
+ *
+ * 🛑 写入策略是 **fail-fast**：任何一个记录号解析不到文件，就一个字节都不写。
+ *    半份清单会让 `mit-run-all` **静默少跑记录**，比直接报错危险得多。
+ * 🛑 写完必回读自检（数非注释行 == n）：SD 卡写失败在某些接触不良下不报错，只写半截。
+ * ==========================================================================*/
+
+#define CLI_SCAN_DIR_N   2
+#define CLI_LIST_MAX     64          /* MIT 48 + 阶梯 8，留余量 */
+#define CLI_MANIFEST_MAX 3072        /* 64 条 × 33 B + 两行注释，够用 */
+
+static const char *const kScanDirs[CLI_SCAN_DIR_N] = { "/sdcard/", "/sdcard/s7_batch/" };
+
+/* 一条"可跑单元"：值（记录号 / bpm）+ 它在哪个目录 */
+typedef struct {
+    int          val;
+    unsigned char dir;
+} cli_item_t;
+
+static bool cli_file_exists(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+/* 收集形如 `前缀 + 3位数字 + 后缀` 的文件。两目录都扫，按 val 去重（先到先得＝根优先）。 */
+static int cli_collect(cli_item_t *out, int max, const char *prefix, const char *suffix)
+{
+    const size_t lp = strlen(prefix);
+    const size_t ls = strlen(suffix);
+    int n = 0;
+
+    for (int d = 0; d < CLI_SCAN_DIR_N; d++) {
+        DIR *dp = opendir(kScanDirs[d]);
+        if (dp == NULL) {
+            continue;
+        }
+        struct dirent *ent;
+        while ((ent = readdir(dp)) != NULL) {
+            const char *nm = ent->d_name;
+            if (strlen(nm) != lp + 3 + ls || strncmp(nm, prefix, lp) != 0 ||
+                strncmp(nm + lp + 3, suffix, ls) != 0) {
+                continue;
+            }
+            const char *g = nm + lp;
+            if (!isdigit((unsigned char)g[0]) || !isdigit((unsigned char)g[1]) ||
+                !isdigit((unsigned char)g[2])) {
+                continue;
+            }
+            const int val = (g[0] - '0') * 100 + (g[1] - '0') * 10 + (g[2] - '0');
+
+            bool dup = false;
+            for (int k = 0; k < n; k++) {
+                if (out[k].val == val) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup || n >= max) {
+                continue;
+            }
+            out[n].val = val;
+            out[n].dir = (unsigned char)d;
+            n++;
+        }
+        closedir(dp);
+    }
+
+    /* 插入排序（n ≤ 64，不必上 qsort） */
+    for (int i = 1; i < n; i++) {
+        const cli_item_t key = out[i];
+        int j = i - 1;
+        while (j >= 0 && out[j].val > key.val) {
+            out[j + 1] = out[j];
+            j--;
+        }
+        out[j + 1] = key;
+    }
+    return n;
+}
+
+/* 把 argv[1..] 用逗号拼起来 —— 让 `mit-set 105,108`、`mit-set 105 108`、
+ * `mit-set 105, 108` 三种写法都能用（shell 会按空格拆参数）。 */
+static int cli_join_args(int argc, char **argv, char *buf, size_t cap)
+{
+    size_t off = 0;
+    buf[0] = '\0';
+    for (int i = 1; i < argc; i++) {
+        const int w = snprintf(buf + off, cap - off, "%s%s", (i == 1) ? "" : ",", argv[i]);
+        if (w < 0 || off + (size_t)w >= cap) {
+            return -1;
+        }
+        off += (size_t)w;
+    }
+    return (int)off;
+}
+
+/* 解析 CSV → 校验每个都真在卡上 → 填 items。返回条数，<0 表示失败（调用方不得写盘）。 */
+static int cli_parse_csv(char *csv, cli_item_t *out, int max,
+                         const char *prefix, const char *suffix)
+{
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(csv, ",", &save); tok != NULL;
+         tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ' || *tok == '\t') {
+            tok++;
+        }
+        int len = (int)strlen(tok);
+        while (len > 0 && (tok[len - 1] == ' ' || tok[len - 1] == '\t')) {
+            tok[--len] = '\0';
+        }
+        if (len == 0 || len > 3) {
+            printf("非法项「%s」：应为 1~3 位数字。\n", tok);
+            return -1;
+        }
+        for (int i = 0; i < len; i++) {
+            if (!isdigit((unsigned char)tok[i])) {
+                printf("非法项「%s」：含非数字字符。\n", tok);
+                return -1;
+            }
+        }
+        if (n >= max) {
+            printf("一次最多写 %d 条。\n", max);
+            return -1;
+        }
+
+        const int val = atoi(tok);
+        bool found = false;
+        for (int d = 0; d < CLI_SCAN_DIR_N && !found; d++) {
+            char full[80];
+            snprintf(full, sizeof(full), "%s%s%03d%s", kScanDirs[d], prefix, val, suffix);
+            if (cli_file_exists(full)) {
+                out[n].val = val;
+                out[n].dir = (unsigned char)d;
+                n++;
+                found = true;
+            }
+        }
+        if (!found) {
+            printf("SD 卡上没有 %s%03d%s —— 已扫 /sdcard/ 与 /sdcard/s7_batch/。\n",
+                   prefix, val, suffix);
+            return -1;
+        }
+    }
+    return n;
+}
+
+/* 写清单并回读自检。返回 0 成功。 */
+static int cli_write_manifest(const char *path, const char *header,
+                              const char *prefix, const char *suffix,
+                              const cli_item_t *items, int n)
+{
+    static char man[CLI_MANIFEST_MAX];
+
+    int off = snprintf(man, sizeof(man), "%s", header);
+    for (int i = 0; i < n; i++) {
+        const int w = snprintf(man + off, sizeof(man) - (size_t)off, "%s%s%03d%s\n",
+                               kScanDirs[items[i].dir], prefix, items[i].val, suffix);
+        if (w < 0 || off + w >= (int)sizeof(man)) {
+            printf("清单超出内部缓冲（%d 条太长）。\n", n);
+            return -1;
+        }
+        off += w;
+    }
+
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        printf("写 %s 失败（SD 卡只读或路径不存在？）。\n", path);
+        return -1;
+    }
+    const size_t wr = fwrite(man, 1, (size_t)off, f);
+    fclose(f);
+    if (wr != (size_t)off) {
+        printf("写入不完整：%u / %d B。\n", (unsigned)wr, off);
+        return -1;
+    }
+
+    /* 回读自检：数非注释、非空行 */
+    int back = 0;
+    f = fopen(path, "r");
+    if (f == NULL) {
+        printf("写入后回读失败（%s）。\n", path);
+        return -1;
+    }
+    char line[128];
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (line[0] != '#' && line[0] != '\n' && line[0] != '\r') {
+            back++;
+        }
+    }
+    fclose(f);
+    if (back != n) {
+        printf("🛑 回读自检不符：写入 %d 条，读回 %d 条。清单不可信，请重写。\n", n, back);
+        return -1;
+    }
+
+    printf("已写 %s：%d 条 / %d B（回读自检 %d/%d ✓）\n", path, n, off, back, n);
+    return 0;
+}
+
+/* ---- mit-list / ladder-list ---- */
+static int cli_do_list(const char *prefix, const char *suffix, const char *title)
+{
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载。\n");
+        return 1;
+    }
+
+    static cli_item_t items[CLI_LIST_MAX];
+    const int n = cli_collect(items, CLI_LIST_MAX, prefix, suffix);
+    if (n == 0) {
+        printf("没找到 %s*%s —— 已扫 /sdcard/ 与 /sdcard/s7_batch/。\n", prefix, suffix);
+        return 1;
+    }
+
+    int per_dir[CLI_SCAN_DIR_N] = { 0, 0 };
+    printf("%s 共 %d 个：\n", title, n);
+    for (int i = 0; i < n; i++) {
+        per_dir[items[i].dir]++;
+        printf("%03d%c", items[i].val, ((i % 10) == 9 || i == n - 1) ? '\n' : ' ');
+    }
+    for (int d = 0; d < CLI_SCAN_DIR_N; d++) {
+        if (per_dir[d] > 0) {
+            printf("  来源 %-20s %d 个\n", kScanDirs[d], per_dir[d]);
+        }
+    }
+    return 0;
+}
+
+static int cmd_mit_list(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    return cli_do_list("mit_", "_500.bin", "MIT 记录");
+}
+
+static int cmd_ladder_list(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    return cli_do_list("sr_", "bpm.bin", "心率阶梯");
+}
+
+/* ---- mit-set / ladder-set ---- */
+static int cli_do_set(int argc, char **argv, const char *prefix, const char *suffix,
+                      const char *manifest, const char *header)
+{
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载。\n");
+        return 1;
+    }
+    if (argc < 2) {
+        printf("用法: %s <a,b,c> | %s all\n", argv[0], argv[0]);
+        return 1;
+    }
+
+    static cli_item_t items[CLI_LIST_MAX];
+    int n;
+
+    if (argc == 2 && strcmp(argv[1], "all") == 0) {
+        n = cli_collect(items, CLI_LIST_MAX, prefix, suffix);
+        if (n == 0) {
+            printf("卡上没有 %s*%s，无法生成 all 清单。\n", prefix, suffix);
+            return 1;
+        }
+        printf("all 模式：按卡上实际文件生成 %d 条。\n", n);
+    } else {
+        char csv[256];
+        if (cli_join_args(argc, argv, csv, sizeof(csv)) < 0) {
+            printf("参数太长（上限 256 字符）。\n");
+            return 1;
+        }
+        n = cli_parse_csv(csv, items, CLI_LIST_MAX, prefix, suffix);
+        if (n <= 0) {
+            printf("🛑 未写入任何内容（上面有失败项）。清单保持原样。\n");
+            return 1;
+        }
+    }
+
+    if (cli_write_manifest(manifest, header, prefix, suffix, items, n) != 0) {
+        return 1;
+    }
+    printf("下一步：%s-run-all 登记清单，再 restart 重启批处理。\n",
+           strncmp(prefix, "mit_", 4) == 0 ? "mit" : "ladder");
+    return 0;
+}
+
+static int cmd_mit_set(int argc, char **argv)
+{
+    return cli_do_set(argc, argv, "mit_", "_500.bin", "/sdcard/batch_mit.txt",
+                      "# CardioLite MIT batch manifest (written by mit-set)\n"
+                      "# one absolute .bin path per line\n");
+}
+
+static int cmd_ladder_set(int argc, char **argv)
+{
+    return cli_do_set(argc, argv, "sr_", "bpm.bin", "/sdcard/batch_ladder.txt",
+                      "# CardioLite ladder batch manifest (written by ladder-set)\n"
+                      "# one absolute .bin path per line\n");
+}
+
+/* ---- scan：递归列全卡 *.bin（S4 升级；原来是只列根目录一层）----
+ * ⚠ 不用 d_type 判目录：ESP32 的 dirent 里 d_type 恒 DT_UNKNOWN（不可靠），
+ *   与 storage_sd.c 一致，改用 stat + S_ISDIR。
+ * 🛑 **必须「先抄名字 → closedir → 再 stat」**。实测（2026-10-29）：
+ *    DIR 流开着时 stat 要 383 ms/次（64 次 = 24.5 s），关了流降到 ~25 ms/次 ——
+ *    同样 2 次 stat 在 `mit-set` 里只花几十毫秒，差别就在「流是否还开着」。
+ *    两阶段写法把 `scan` 从 25 s 压到 4 s。
+ * 🛑 **只有 `.bin` 才 stat**，其余条目用 opendir 试探判目录（~0.6 ms vs ~25 ms）。
+ *    `/sdcard/overlays/` 有上百个 png 资源，逐个 stat 纯属白扔时间。 */
+/* 安全的路径拼接：放不下就返回 false（调用方跳过）。
+ * 🛑 不用 snprintf("%s%s")：fatfs 的 d_name 最长 255 B，编译器会判「可能截断」并
+ *    以 -Werror=format-truncation 直接卡构建；而这里显式算长度，既无告警也真的不会截断。 */
+static bool cli_join_path(char *out, size_t cap, const char *a, const char *b, const char *c)
+{
+    const size_t la = strlen(a);
+    const size_t lb = strlen(b);
+    const size_t lc = (c != NULL) ? strlen(c) : 0;
+    if (la + lb + lc + 1 > cap) {
+        return false;
+    }
+    memcpy(out, a, la);
+    memcpy(out + la, b, lb);
+    if (lc > 0) {
+        memcpy(out + la + lb, c, lc);
+    }
+    out[la + lb + lc] = '\0';
+    return true;
+}
+
+/* --- scan 的耗时拆分（S4 实测用）---
+ * 起因：`scan` 首次实测 25 s，`mit-list`（同样两次 opendir+readdir）只要 0.1 s。
+ * 我先后猜过「printf 逐行刷串口慢」和「stat 本身慢」，两次都被数据否掉；最后靠这段
+ * 计时一次测准：`耗时 24879 ms = 目录 289 + stat 24538 + 输出 37`。
+ * ⇒ **瓶颈是 stat，而且只在 DIR 流打开时慢**（`mit-set` 里 2 次独立 stat 只花几毫秒，
+ *   这里 64 次却 383 ms/次）。修法就是下面这个两阶段：先抄名字、关流，再 stat。
+ * 计时永久保留 —— 以后换卡、换 FAT 配置都能一眼看出瓶颈在哪。 */
+static int64_t s_t_dir;      /* opendir + readdir + closedir */
+static int64_t s_t_stat;     /* stat() */
+static int64_t s_t_out;      /* printf + fflush */
+static int     s_dtype_unknown;  /* readdir 没给有效 d_type 的条目数（验证 d_type 能否用） */
+
+#define CLI_SCAN_ENTRY_MAX 96        /* 单目录最多抄 96 条（实测 s7_batch 56 条）*/
+#define CLI_SCAN_SUB_MAX   4         /* 单目录最多下钻 4 个子目录 */
+
+typedef struct {
+    char full[96];               /* 绝对路径，给 stat 用 */
+    char rel[64];                /* 相对 /sdcard/ 的显示名 */
+    unsigned char dtype;         /* readdir 给的 d_type（DT_UNKNOWN 表示不可信） */
+} cli_scan_ent_t;
+
+/* 🛑 必须是**单一份**、且只在「本目录全部抄完、流已关闭」后才使用：
+ *    递归时子目录会复用同一块，所以父层不能在自己遍历期间还留着指针。 */
+static cli_scan_ent_t s_ents[CLI_SCAN_ENTRY_MAX];
+
+/* 待下钻的子目录清单，**按深度分片**（0=根，1=s7_batch，2=第三层只打印不展开）。
+ * 🛑 不能放栈上：`console_repl` 任务栈只有 4 KB，一帧 640 B 的两层递归直接把任务打崩
+ *    （实测 `***ERROR*** A stack overflow in task console_repl`）。
+ * 🛑 也不能用单份 static：父层还在遍历子目录清单时，子层会把同一块覆盖掉。 */
+static char s_sub[3][CLI_SCAN_SUB_MAX][96];
+static char s_subrel[3][CLI_SCAN_SUB_MAX][64];
+
+static int scan_walk(const char *dir, const char *rel, int depth, int *count)
+{
+    /* ---- 阶段 1：只 readdir 抄名字，抄完立刻 closedir ---- */
+    int m = 0;
+    bool over = false;
+
+    int64_t t0 = esp_timer_get_time();
+    DIR *dp = opendir(dir);
+    s_t_dir += esp_timer_get_time() - t0;
+    if (dp == NULL) {
+        printf("打开 %s 失败。\n", dir);
+        return -1;
+    }
+
+    for (;;) {
+        t0 = esp_timer_get_time();
+        struct dirent *ent = readdir(dp);
+        s_t_dir += esp_timer_get_time() - t0;
+        if (ent == NULL) {
+            break;
+        }
+
+        const char *nm = ent->d_name;
+        if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) {
+            continue;
+        }
+        if (m >= CLI_SCAN_ENTRY_MAX) {
+            over = true;
+            break;
+        }
+
+        /* 🛑 d_type 可信时，**确定既不是目录、也不是 .bin** 的条目当场丢掉。
+         *    `overlays/` 是树莓派启动分区的几百个 .dtbo，全抄进来会把 96 条上限挤爆，
+         *    结果连 .bin 都列不全（实测就是这么漏的）。 */
+        const size_t nl = strlen(nm);
+        const bool maybe_bin = (nl > 4) && (strcasecmp(nm + nl - 4, ".bin") == 0);
+        const unsigned char dt = (unsigned char)ent->d_type;
+        if (dt != DT_UNKNOWN && dt != DT_DIR && !maybe_bin) {
+            continue;
+        }
+
+        if (!cli_join_path(s_ents[m].full, sizeof(s_ents[m].full), dir, nm, NULL)) {
+            continue;                       /* 路径过长：FAT 下不会出现，跳过即可 */
+        }
+        if (rel[0] != '\0') {
+            if (!cli_join_path(s_ents[m].rel, sizeof(s_ents[m].rel), rel, "/", nm)) {
+                continue;
+            }
+        } else if (!cli_join_path(s_ents[m].rel, sizeof(s_ents[m].rel), "", nm, NULL)) {
+            continue;
+        }
+        s_ents[m].dtype = (unsigned char)ent->d_type;
+        m++;
+    }
+
+    t0 = esp_timer_get_time();
+    closedir(dp);
+    s_t_dir += esp_timer_get_time() - t0;
+
+    /* ---- 阶段 2：流已关闭，这时 stat 才是毫秒级 ---- */
+    char (*subdir)[96] = s_sub[depth];              /* 指向本深度的分片，不在栈上 */
+    char (*subrel)[64] = s_subrel[depth];
+    int  nsub = 0;
+
+    for (int i = 0; i < m; i++) {
+        const char *nm = strrchr(s_ents[i].rel, '/');
+        nm = (nm != NULL) ? (nm + 1) : s_ents[i].rel;
+        const size_t ln = strlen(nm);
+        const bool is_bin = (ln > 4) && (strcasecmp(nm + ln - 4, ".bin") == 0);
+
+        bool is_dir = false;
+        struct stat st;
+        memset(&st, 0, sizeof(st));
+
+        if (s_ents[i].dtype == DT_DIR) {
+            is_dir = true;                  /* readdir 已经说清，省掉一次查找 */
+        } else if (s_ents[i].dtype == DT_UNKNOWN) {
+            /* 这版 IDF 的 fatfs 可能不给 d_type ⇒ 退回「探测」：
+             * 非 .bin 条目只关心它是不是目录，用 opendir 试比 stat 语义更直接。 */
+            s_dtype_unknown++;
+            if (!is_bin) {
+                t0 = esp_timer_get_time();
+                DIR *probe = opendir(s_ents[i].full);
+                if (probe != NULL) {
+                    closedir(probe);
+                    is_dir = true;
+                }
+                s_t_dir += esp_timer_get_time() - t0;
+                if (!is_dir) {
+                    continue;               /* 普通非 .bin 文件：不列 */
+                }
+            }
+        }
+
+        /* 要显示大小就得 stat；顺带兜住「名字带 .bin 的目录」这种边角 */
+        if (is_bin && !is_dir) {
+            t0 = esp_timer_get_time();
+            const int src = stat(s_ents[i].full, &st);
+            s_t_stat += esp_timer_get_time() - t0;
+            if (src != 0) {
+                continue;
+            }
+            if (S_ISDIR(st.st_mode)) {
+                is_dir = true;
+            }
+        }
+
+        if (is_dir) {
+            if (depth < 2 && nsub < CLI_SCAN_SUB_MAX) {
+                if (cli_join_path(subdir[nsub], sizeof(subdir[nsub]), s_ents[i].full, "/", NULL) &&
+                    cli_join_path(subrel[nsub], sizeof(subrel[nsub]), s_ents[i].rel, "", NULL)) {
+                    nsub++;
+                }
+            } else if (depth >= 2) {
+                printf("%-44s   <目录，未展开>\n", s_ents[i].rel);
+            } else {
+                printf("%-44s   <子目录过多，未展开>\n", s_ents[i].rel);
+            }
+            continue;
+        }
+
+        /* 走到这里既不是目录 —— 那只有 .bin 才值得列。
+         * 🛑 这一道不能省：`d_type` 可信时前面根本不会走 DT_UNKNOWN 分支，
+         *    少了它会把所有普通文件都当成 .bin 打出来（实测 215 条里有 150 条是 .dtbo）。 */
+        if (!is_bin) {
+            continue;
+        }
+
+        t0 = esp_timer_get_time();
+        printf("%-44s %8u KB\n", s_ents[i].rel, (unsigned)(st.st_size / 1024));
+        fflush(stdout);
+        s_t_out += esp_timer_get_time() - t0;
+        (*count)++;
+    }
+
+    if (over) {
+        printf("⚠ %s 条目超过 %d，后面的没列（也不计入总数）\n", dir, CLI_SCAN_ENTRY_MAX);
+    }
+
+    /* ---- 阶段 3：本层名字已用完，才下钻（子层写的是自己深度的分片）---- */
+    for (int i = 0; i < nsub; i++) {
+        scan_walk(s_sub[depth][i], s_subrel[depth][i], depth + 1, count);
+    }
+    return 0;
+}
+
+static int cmd_scan(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载。\n");
+        return 1;
+    }
+
+    /* 这一行带 fflush，是判断「输出是否攒到最后一起冲」的探针：
+     * 若它立刻到，说明 printf 是逐次生效的，后面 25 s 全在干活；
+     * 若它也在 23 s 后才到，说明 stdout 是块缓冲，字节数 < 4 KB 就一次都不刷。 */
+    printf("扫描 /sdcard/ ...\n");
+    fflush(stdout);
+    const int64_t t_all = esp_timer_get_time();
+
+    s_t_dir = s_t_stat = s_t_out = 0;
+    s_dtype_unknown = 0;
+    int n = 0;
+    scan_walk("/sdcard/", "", 0, &n);
+    const int64_t total = esp_timer_get_time() - t_all;
+
+    if (n == 0) {
+        printf("（全卡无 .bin 文件）\n");
+    } else {
+        printf("共 %d 个 .bin 文件\n", n);
+    }
+    printf("耗时 %d ms = 目录 %d + stat %d + 输出 %d（其余 %d）\n",
+           (int)(total / 1000), (int)(s_t_dir / 1000), (int)(s_t_stat / 1000),
+           (int)(s_t_out / 1000), (int)((total - s_t_dir - s_t_stat - s_t_out) / 1000));
+    printf("d_type 不可用条目 %d 个（0 = 全部由 readdir 判型，无需逐个查找）\n",
+           s_dtype_unknown);
+    fflush(stdout);
+    return 0;
+}
+
+/* ---- S3：回放对账（mit-run / ladder-run）----
+ *
+ * 与 S2 批处理的关系：**两种跑法，各干各的**（需求 §1 方案 A）。
+ *   `mit-run <rec>`   → 走 ecg_pipeline 按 500 Hz 节拍回放（屏幕有波形），
+ *                       边跑边把峰序列打到串口，跑完 `FILE` 行收尾 → 可直接对账。
+ *   `mit-run-all`     → 走 ecg_batch 全速黑屏批处理（S2）。
+ *
+ * 🛑 **峰号必须是「文件内相对样本号」**（与 `_ann500.txt` 同坐标系），否则
+ *   `ecg_batch_eval.py` 对不上。管线的全局绝对号 → 相对号转换在
+ *   `ecg_pipeline_set_rpeak_dump()` 内部完成（见 ecg_pipeline.h 的口径说明）。
+ */
+
+/* ---- 回放增益（S3+）----
+ *
+ * 增益是**垂直方向**（mV → px），与 `--speed`（水平方向，时间快进）是两个维度。
+ * 四档与 UI 的 GAIN 按钮完全一致（`k_gain_v[]`）：2.5 / 5 / 10 / 20 mm/mV，默认 5。
+ * `APP_PX_PER_MV(g) = g × APP_MMY_PX_PER_MM`（4 px/mm）⇒ 默认 1 mV = 20 px。
+ *
+ * 两种输入写法：
+ *   `10`  → 直接给 mm/mV
+ *   `2x`  → 相对基准 5 mm/mV 的倍数（2x = 10、4x = 20、0.5x = 2.5、1x = 5）
+ * 只接受四档：超出的值 UI 按钮会显示不出对应档位，也破坏测试可比性。
+ */
+static bool parse_gain_arg(const char *s, float *out)
+{
+    if (s == NULL || out == NULL || *s == '\0') {
+        return false;
+    }
+    char  *end = NULL;
+    const double v = strtod(s, &end);
+    if (end == s || v <= 0.0) {
+        return false;
+    }
+    if (*end == 'x' || *end == 'X') {
+        if (*(end + 1) != '\0') {
+            return false;
+        }
+        *out = (float)((double)APP_GAIN_5 * v);
+        return true;
+    }
+    if (*end != '\0') {
+        return false;
+    }
+    *out = (float)v;
+    return true;
+}
+
+static bool gain_is_supported(float g)
+{
+    return (fabsf(g - APP_GAIN_2_5) < 0.01f)
+        || (fabsf(g - APP_GAIN_5)   < 0.01f)
+        || (fabsf(g - APP_GAIN_10)  < 0.01f)
+        || (fabsf(g - APP_GAIN_20)  < 0.01f);
+}
+
+/** 应用增益（LVGL 非线程安全，必须持锁；并刷新按钮栏的档位高亮） */
+static void apply_gain(float g)
+{
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        ui_waveform_set_gain(g);
+        ui_button_bar_refresh();
+        esp_lv_adapter_unlock();
+    } else {
+        printf("⚠ 取 LVGL 锁失败，增益未应用。\n");
+    }
+}
+
+static const char *gain_usage(void)
+{
+    return "增益档位: 2.5 / 5 / 10 / 20 mm/mV（默认 5），也可写 0.5x / 1x / 2x / 4x";
+}
+
+/**
+ * 启动一次回放对账。
+ * @param fname SD 根目录下的文件名（`mit_105_500.bin` / `sr_060bpm.bin`）
+ * @param speed 倍速 1/2/4/8
+ * @param gain  增益 mm/mV；<=0 表示不改（沿用 UI 当前档位）
+ * @param mode  进入哪个测试模式（禁用 UI 按钮，防与回放打架）
+ * @return 0 = 已开始回放
+ */
+static int start_replay(const char *fname, int speed, float gain, test_mode_t mode)
+{
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载，无法回放。\n");
+        return 1;
+    }
+
+    char path[96];
+    bool found = false;
+
+    /* 🛑 载荷不一定在根目录：`tools/make_sdcard_batch.py` 的 SD_SUB = "s7_batch"
+     * ⇒ 实际文件是 `/sdcard/s7_batch/mit_105_500.bin`。两处都试，谁在用都能跑，
+     * 也兼容需求文档里写的「SD 卡 mit_105_500.bin」字面布局。 */
+    static const char *const kDirs[] = { "/sdcard/", "/sdcard/s7_batch/" };
+    for (size_t i = 0; i < sizeof(kDirs) / sizeof(kDirs[0]); i++) {
+        snprintf(path, sizeof(path), "%s%s", kDirs[i], fname);
+        FILE *f = fopen(path, "rb");
+        if (f != NULL) {
+            fclose(f);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        printf("找不到 %s\n", fname);
+        printf("已试过 /sdcard/ 与 /sdcard/s7_batch/。可用 scan 看根目录 .bin。\n");
+        return 1;
+    }
+    printf("数据文件: %s\n", path);
+
+    const bool running = ecg_pipeline_running();
+
+    /* 1) 先停住投喂：保证下面的 BATCH-BEGIN 一定打在第一个 P 之前，序列不乱 */
+    ecg_pipeline_pause();
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    /* 2) 序列头（与批处理同格式，ecg_batch_eval.py 直接可吃） */
+    printf("BATCH-BEGIN total=1\n");
+    printf("# CardioLite S3 replay: fs=%d Hz, file=%s, speed=%dx, "
+           "峰号=文件内相对样本号\n", APP_SAMPLE_RATE_HZ, fname, speed);
+
+    /* 3) 开 dump + 设倍速 + 定落盘文件。必须在样本开始喂之前生效。 */
+    char result_path[96];
+    {
+        /* 结果文件名由数据文件名派生：
+         *   mit_105_500.bin -> mit_105_result.txt
+         *   sr_060bpm.bin   -> sr_060bpm_result.txt
+         * 去 `.bin` 再去 `_500` 尾巴（记录号才是唯一标识）。 */
+        char stem[64];
+        snprintf(stem, sizeof(stem), "%.*s", (int)sizeof(stem) - 1, fname);
+        char *dot = strrchr(stem, '.');
+        if (dot != NULL) {
+            *dot = '\0';
+        }
+        const size_t sl = strlen(stem);
+        if (sl > 4 && strcmp(stem + sl - 4, "_500") == 0) {
+            stem[sl - 4] = '\0';
+        }
+        snprintf(result_path, sizeof(result_path), "/sdcard/%s_result.txt", stem);
+    }
+
+    ecg_pipeline_set_speed(speed);
+    ecg_pipeline_set_dump_file(result_path);   /* 峰序列同时落盘一份 */
+    ecg_pipeline_set_rpeak_dump(true);
+
+    /* 4) 启动 / 换文件。set_file 内部会把 s_paused 清掉从而自动恢复播放。 */
+    if (running) {
+        ecg_pipeline_set_file(path);
+    } else {
+        const esp_err_t e = ecg_pipeline_start(path, false);
+        if (e != ESP_OK) {
+            printf("启动管线失败: %s\n", esp_err_to_name(e));
+            ecg_pipeline_set_rpeak_dump(false);
+            return 1;
+        }
+        ecg_pipeline_detach_consumer();   /* 环缓交给 UI 绘制 */
+    }
+
+    /* 5) 增益（只影响绘制，不影响检测与峰序列 —— 对账结论不受它影响） */
+    if (gain > 0.0f) {
+        apply_gain(gain);
+        printf("增益: %.2f mm/mV（1 mV = %.0f px）\n",
+               (double)gain, (double)APP_PX_PER_MV(gain));
+    } else {
+        printf("增益: 沿用当前档位 %.2f mm/mV\n", (double)ui_waveform_get_gain());
+    }
+
+    test_mode_set(mode);
+    printf("回放中：波形在屏上；串口只打进度（每 5 万样本一行），完整峰序列写 SD 卡。\n");
+    printf("结果文件: %s（跑到 EOF 才有；中途 run-stop 不落盘）\n", result_path);
+    printf("对账：把该文件拷到 PC，python tools/s3_verify_replay.py <文件>\n");
+    printf("中途停止用 run-stop。\n");
+    return 0;
+}
+
+/* mit-run <rec> [gain] [--speed N] */
+static struct {
+    struct arg_str *rec;
+    struct arg_str *gain;
+    struct arg_int *speed;
+    struct arg_end *end;
+} s_mit_run_args;
+
+static int cmd_mit_run(int argc, char **argv)
+{
+    const int nerrors = arg_parse(argc, argv, (void **)&s_mit_run_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, s_mit_run_args.end, argv[0]);
+        printf("用法: mit-run <rec> [gain] [--speed 1|2|4|8]    例: mit-run 105 2x\n");
+        printf("%s\n", gain_usage());
+        return 1;
+    }
+    if (s_mit_run_args.rec->count == 0) {
+        printf("用法: mit-run <rec> [gain] [--speed 1|2|4|8]    例: mit-run 105 2x\n");
+        printf("%s\n", gain_usage());
+        return 1;
+    }
+
+    const char *rec   = s_mit_run_args.rec->sval[0];
+    const int   speed = (s_mit_run_args.speed->count > 0)
+                        ? s_mit_run_args.speed->ival[0] : 1;
+
+    float gain = 0.0f;      /* 0 = 不改，沿用 UI 当前档位 */
+    if (s_mit_run_args.gain->count > 0) {
+        const char *gs = s_mit_run_args.gain->sval[0];
+        if (!parse_gain_arg(gs, &gain)) {
+            printf("增益写法不认识: %s\n", gs);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+        if (!gain_is_supported(gain)) {
+            printf("增益 %.2f mm/mV 不在档位内。\n", (double)gain);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+    }
+
+    char fname[64];
+    snprintf(fname, sizeof(fname), "mit_%s_500.bin", rec);
+    return start_replay(fname, speed, gain, TEST_MIT);
+}
+
+/* ladder-run <bpm> [gain] [--speed N] */
+static struct {
+    struct arg_int *bpm;
+    struct arg_str *gain;
+    struct arg_int *speed;
+    struct arg_end *end;
+} s_ladder_run_args;
+
+static int cmd_ladder_run(int argc, char **argv)
+{
+    const int nerrors = arg_parse(argc, argv, (void **)&s_ladder_run_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, s_ladder_run_args.end, argv[0]);
+        printf("用法: ladder-run <bpm> [gain] [--speed 1|2|4|8]    例: ladder-run 60 2x\n");
+        printf("%s\n", gain_usage());
+        return 1;
+    }
+    if (s_ladder_run_args.bpm->count == 0) {
+        printf("用法: ladder-run <bpm> [gain] [--speed 1|2|4|8]    例: ladder-run 60 2x\n");
+        printf("%s\n", gain_usage());
+        return 1;
+    }
+
+    const int bpm   = s_ladder_run_args.bpm->ival[0];
+    const int speed = (s_ladder_run_args.speed->count > 0)
+                      ? s_ladder_run_args.speed->ival[0] : 1;
+    if (bpm <= 0 || bpm > 999) {
+        printf("bpm 超出范围（1~999）。\n");
+        return 1;
+    }
+
+    float gain = 0.0f;
+    if (s_ladder_run_args.gain->count > 0) {
+        const char *gs = s_ladder_run_args.gain->sval[0];
+        if (!parse_gain_arg(gs, &gain)) {
+            printf("增益写法不认识: %s\n", gs);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+        if (!gain_is_supported(gain)) {
+            printf("增益 %.2f mm/mV 不在档位内。\n", (double)gain);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+    }
+
+    /* 阶梯文件命名是三位补零：sr_060bpm.bin */
+    char fname[64];
+    snprintf(fname, sizeof(fname), "sr_%03dbpm.bin", bpm);
+    return start_replay(fname, speed, gain, TEST_LADDER);
+}
+
+/* run-stop：停止回放并关掉峰序列输出 */
+static int cmd_run_stop(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    ecg_pipeline_set_rpeak_dump(false);
+    ecg_pipeline_set_dump_file(NULL);   /* 半截数据不落盘（也没有 FILE 行，没法对账） */
+    ecg_pipeline_pause();
+    printf("回放已停止（峰序列输出与落盘均已关闭）。\n");
+    return 0;
+}
+
+/* ---- result-dump <stem>：把 SD 卡上的回放结果文件回传到串口 ----
+ *
+ * 为什么需要它：回放过程串口只打进度（干净、不被 P 峰淹没），完整峰序列落盘在
+ * `/sdcard/<stem>_result.txt`。但板子是 USB-JTAG CDC（不是 U 盘模式），PC 读不到卡内容，
+ * 总不能每验一条就拔卡拷文件。于是提供这个**按需**回传：想看才拉，不看不打印。
+ *
+ * 体积：单条约 19 KB（`mit_105` = 18,587 B）；批处理汇总 771 KB（48 条 / 109,563 峰）。
+ *
+ * 🛑 **大文件回传的完整性靠 PC 侧，不靠串口自报**：USB-JTAG 突发输出会静默丢字节
+ *   （2026-10-29 实测 771 KB 丢 5 行 `P` + 1 行被削掉前 3 字节，而 `# ---- END`
+ *   自报的 771,619 B 与原文件分毫不差 ⇒ 那个数字证明不了传完整）。
+ *   真因已定位在 **PC 接收端**（Windows 串口默认 RX 缓冲仅 4 KB + 接收循环里每块
+ *   `flush()` 卡磁盘几十 ms ⇒ 驱动缓冲溢出）。`tools/s3_replay_capture.py` 改成
+ *   `set_buffer_size(1 MB)` + 攒 64 KB 才 flush 后，同一份 771 KB 回传
+ *   **逐行完全一致**（`tools/s3_dump_verify.py` 可复核）⇒ 固件无需节流。
+ *
+ * 输出格式与回放输出完全一致 ⇒ `tools/s3_verify_replay.py` / `tools/ecg_batch_eval.py` 直接吃。 */
+static struct {
+    struct arg_str *stem;
+    struct arg_end *end;
+} s_result_dump_args;
+
+static int cmd_result_dump(int argc, char **argv)
+{
+    const int nerrors = arg_parse(argc, argv, (void **)&s_result_dump_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, s_result_dump_args.end, argv[0]);
+        printf("用法: result-dump <stem>    例: result-dump mit_105\n");
+        return 1;
+    }
+    if (s_result_dump_args.stem->count == 0) {
+        printf("用法: result-dump <stem>    例: result-dump mit_105\n");
+        return 1;
+    }
+    if (!storage_sd_is_mounted()) {
+        printf("SD 卡未挂载。\n");
+        return 1;
+    }
+
+    const char *stem = s_result_dump_args.stem->sval[0];
+    char path[96];
+
+    /* 三种写法（猛哥 2026-10-29：「result-dump mit_all 应该把 batch_mit_result.txt 也导出来」）
+     *   ① 别名 mit_all / all / batch → 批处理 48 条的汇总结果 /sdcard/batch_mit_result.txt
+     *      —— 必须单列：那个文件名是 `batch_mit_result.txt`，拼 `<stem>_result.txt` 推不出来。
+     *   ② 带 `.txt`                   → 当完整文件名用（`result-dump batch_mit_result.txt`）
+     *   ③ 其它（记录号）              → 拼 `<stem>_result.txt`，与 mit-run 落盘命名一致。 */
+    if (strcmp(stem, "mit_all") == 0 || strcmp(stem, "all") == 0 || strcmp(stem, "batch") == 0) {
+        snprintf(path, sizeof(path), "/sdcard/batch_mit_result.txt");
+    } else if (strstr(stem, ".txt") != NULL) {
+        snprintf(path, sizeof(path), "/sdcard/%.*s", (int)sizeof(path) - 9, stem);
+    } else {
+        snprintf(path, sizeof(path), "/sdcard/%s_result.txt", stem);
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        printf("找不到 %s\n", path);
+        printf("写法: result-dump mit_105 | result-dump mit_all（批处理汇总）| result-dump xxx.txt\n");
+        return 1;
+    }
+
+    printf("# ---- BEGIN %s ----\n", path);
+    char   buf[512];
+    size_t n;
+    size_t total = 0;
+    while ((n = fread(buf, 1, sizeof(buf) - 1, f)) > 0) {
+        buf[n] = '\0';
+        printf("%s", buf);
+        total += n;
+    }
+    fclose(f);
+    printf("\n# ---- END %s (%u B) ----\n", path, (unsigned)total);
+    return 0;
+}
+
+/* ---- restart：软重启（跑批处理登记后用它触发重启）---- */
+static int cmd_restart(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("重启中...\n");
+    esp_restart();
+    return 0;
+}
+
+/* ---- log：开/关串口日志级别 ----
+ * 上电默认全局日志被压到 ERROR（见 main.c 的 app_main 开头），串口干净。
+ * 调试时按需 `log info/debug/verbose` 打开，`log off` 关回全静默。 */
+static int cmd_log(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("用法: log <off|error|warn|info|debug|verbose>\n");
+        printf("当前全局日志级别: %d（0=off 1=error 2=warn 3=info 4=debug 5=verbose）\n",
+               (int)esp_log_level_get("*"));
+        return 1;
+    }
+
+    esp_log_level_t lvl;
+    if (strcmp(argv[1], "off") == 0) {
+        lvl = ESP_LOG_NONE;
+    } else if (strcmp(argv[1], "error") == 0) {
+        lvl = ESP_LOG_ERROR;
+    } else if (strcmp(argv[1], "warn") == 0) {
+        lvl = ESP_LOG_WARN;
+    } else if (strcmp(argv[1], "info") == 0) {
+        lvl = ESP_LOG_INFO;
+    } else if (strcmp(argv[1], "debug") == 0) {
+        lvl = ESP_LOG_DEBUG;
+    } else if (strcmp(argv[1], "verbose") == 0) {
+        lvl = ESP_LOG_VERBOSE;
+    } else {
+        printf("未知级别: %s\n", argv[1]);
+        return 1;
+    }
+
+    esp_log_level_set("*", lvl);
+    printf("全局日志级别 -> %s\n", argv[1]);
+
+    return 0;
+}
+
+/* ============================================================================
+ * 命令注册
+ * ========================================================================== */
+
+/* ============================================================================
+ * S9a：485 实时源
+ *
+ * 数据源切换的语义：
+ *   485-start  → 停掉当前源（含 SD 回放的暂停态）→ 装 UART1 → 收到帧即推环缓
+ *   485-stop   → 停 485 源，**回到上电默认**（SD 有文件则重启 FILE 源并暂停）
+ *
+ * UI 一行都不用改：绘制定时器不读播放状态，数据进了环缓下一帧就画出来
+ * （见 ui_waveform.c:579 on_frame / :594 pull_samples）。
+ * ========================================================================== */
+
+static int cmd_485_start(int argc, char **argv)
+{
+    uint32_t baud = APP_485_BAUD_DEFAULT;
+    if (argc >= 2) {
+        char *endp = NULL;
+        const long v = strtol(argv[1], &endp, 10);
+        if (endp == argv[1] || v < 1200 || v > 3000000) {
+            printf("波特率不合法: %s（允许 1200 ~ 3000000）\n", argv[1]);
+            return 1;
+        }
+        baud = (uint32_t)v;
+    }
+
+    const esp_err_t err = ecg_pipeline_start_rs485(baud);
+    if (err != ESP_OK) {
+        printf("485 启动失败: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("485 源已启动：UART%d  TX=IO%d->DI  RX=IO%d<-RO  @%lu 8N1\n",
+           APP_485_UART_NUM, APP_485_TX_GPIO, APP_485_RX_GPIO,
+           (unsigned long)rs485_baud());
+    printf("  差分线：A=P1-10(TX+)  B=P1-9(TX-)；方向由硬件自动切换\n");
+    printf("  PC 侧：python tools/rs485_stream.py --port COM27 --file <ecg.bin>\n");
+    printf("  数据到达后屏上波形自动出现（UI 无需切换）；485-stat 看对账\n");
+    return 0;
+}
+
+static int cmd_485_stop(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!ecg_pipeline_src_is_rs485()) {
+        printf("当前不是 485 源（无操作）\n");
+        return 0;
+    }
+
+    ecg_pipeline_stream_stat_t st;
+    ecg_pipeline_get_stream_stat(&st);
+    rs485_stat_t rs;
+    rs485_get_stat(&rs);
+
+    ecg_pipeline_stop();
+    printf("485 源已停止：收 %lu B / %lu 帧，crc_err=%lu seq_gaps=%lu\n",
+           (unsigned long)rs.rx_bytes, (unsigned long)st.frames,
+           (unsigned long)st.crc_errors, (unsigned long)st.seq_gaps);
+
+    /* 回到上电默认：SD 上还有文件就重启 FILE 源并暂停，等用户点「回放」。
+     * 这样 UI 状态、BPM 归 `--` 的行为与重新上电完全一致，不留半截状态。 */
+    if (storage_sd_is_mounted()) {
+        const storage_sd_files_t *files = storage_sd_get_files();
+        const char *path = (files->single[0] != '\0') ? files->single
+                                                      : APP_SD_FILE_PATH;
+        const esp_err_t e = ecg_pipeline_start(path, false);
+        if (e == ESP_OK) {
+            ecg_pipeline_detach_consumer();
+            ecg_pipeline_pause();
+            printf("已回到 SD 回放（%s，暂停态），点「回放」按钮继续\n", path);
+        } else {
+            printf("重启 SD 回放失败: %s\n", esp_err_to_name(e));
+        }
+    } else {
+        printf("SD 未挂载，保持空闲（重新上电可恢复）\n");
+    }
+    return 0;
+}
+
+static int cmd_485_stat(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    ecg_pipeline_stream_stat_t st;
+    ecg_pipeline_get_stream_stat(&st);
+    rs485_stat_t rs;
+    rs485_get_stat(&rs);
+    ecg_pipeline_stats_t ps;
+    ecg_pipeline_get_stats(&ps);
+    ecg_pipeline_hr_t hr;
+    const bool hrok = ecg_pipeline_get_hr(&hr);
+
+    printf("源        : %s%s\n", st.active ? "RS485" : "FILE（SD 回放）",
+           ecg_pipeline_running() ? "" : " / 未运行");
+    printf("UART      : %s  UART%d @%lu 8N1  TX=IO%d RX=IO%d\n",
+           rs485_ready() ? "ready" : "未初始化", APP_485_UART_NUM,
+           (unsigned long)rs485_baud(), APP_485_TX_GPIO, APP_485_RX_GPIO);
+    printf("链路      : rx=%lu B  tx=%lu B  chunks=%lu  parity=%lu  frame=%lu  ovf=%lu\n",
+           (unsigned long)rs.rx_bytes, (unsigned long)rs.tx_bytes,
+           (unsigned long)rs.rx_chunks, (unsigned long)rs.parity_err,
+           (unsigned long)rs.frame_err, (unsigned long)rs.fifo_ovf);
+    printf("解帧      : frames=%lu  crc_err=%lu  resync=%lu B  bad_len=%lu  seq_gaps=%lu\n",
+           (unsigned long)st.frames, (unsigned long)st.crc_errors,
+           (unsigned long)st.resync_bytes, (unsigned long)st.bad_len,
+           (unsigned long)st.seq_gaps);
+    printf("环缓      : pushed=%lu  dropped=%lu  水位=%u 帧=%lu\n",
+           (unsigned long)ps.pushed, (unsigned long)ps.dropped,
+           (unsigned)ps.ring_level, (unsigned long)ps.frames_read);
+    printf("心率      : %s  bpm=%.1f  peaks=%lu  fed=%lu\n",
+           (hrok && hr.bpm > 0.0f) ? "ok" : "未就绪（稳定窗内或未接到数据）",
+           (hrok ? (double)hr.bpm : 0.0), (unsigned long)(hrok ? hr.peak_total : 0),
+           (unsigned long)(hrok ? hr.fed : 0));
+    return 0;
+}
+
+static void register_commands(void)
+{
+    /* ---- S3：argtable 初始化（必须在注册/执行前完成）----
+     * 位置参数按注册顺序分配：第 1 个给 <rec>/<bpm>，第 2 个（可选）给 [gain]。
+     * `arg_int0` 的最后一参是默认值 NULL ⇒ 不传就看 count==0 走默认。 */
+    s_mit_run_args.rec   = arg_str1(NULL, NULL, "<rec>", "MIT 记录号，如 105（读 mit_105_500.bin）");
+    s_mit_run_args.gain  = arg_str0(NULL, NULL, "[gain]", "增益 2.5/5/10/20 mm/mV 或 0.5x/1x/2x/4x");
+    s_mit_run_args.speed = arg_int0(NULL, "speed", "<n>", "回放倍速 1/2/4/8（默认 1）");
+    s_mit_run_args.end   = arg_end(3);
+
+    s_ladder_run_args.bpm   = arg_int1(NULL, NULL, "<bpm>", "目标心率，如 60（读 sr_060bpm.bin）");
+    s_ladder_run_args.gain  = arg_str0(NULL, NULL, "[gain]", "增益 2.5/5/10/20 mm/mV 或 0.5x/1x/2x/4x");
+    s_ladder_run_args.speed = arg_int0(NULL, "speed", "<n>", "回放倍速 1/2/4/8（默认 1）");
+    s_ladder_run_args.end   = arg_end(3);
+
+    s_result_dump_args.stem = arg_str1(NULL, NULL, "<stem>", "结果文件名主干，如 mit_105");
+    s_result_dump_args.end  = arg_end(1);
+
+    const esp_console_cmd_t cmds[] = {
+        {
+            .command = "status",
+            .help    = "打印当前测试模式与 UI 按钮状态",
+            .hint    = NULL,
+            .func    = &cmd_status,
+        },
+        {
+            .command = "test-mit",
+            .help    = "进入 MIT-BIH 测试模式（禁用 UI 按钮）",
+            .hint    = NULL,
+            .func    = &cmd_test_mit,
+        },
+        {
+            .command = "test-ladder",
+            .help    = "进入心率阶梯测试模式（禁用 UI 按钮）",
+            .hint    = NULL,
+            .func    = &cmd_test_ladder,
+        },
+        {
+            .command = "test-exit",
+            .help    = "退出测试模式，恢复 UI 按钮",
+            .hint    = NULL,
+            .func    = &cmd_test_exit,
+        },
+        {
+            .command  = "mit-run",
+            .help     = "回放单条 MIT 记录（波形 + 峰序列，可对账）",
+            .hint     = "<rec> [gain] [--speed 1|2|4|8]",
+            .func     = &cmd_mit_run,
+            .argtable = (void **)&s_mit_run_args,
+        },
+        {
+            .command  = "ladder-run",
+            .help     = "回放单档心率阶梯（波形 + 峰序列，可对账）",
+            .hint     = "<bpm> [gain] [--speed 1|2|4|8]",
+            .func     = &cmd_ladder_run,
+            .argtable = (void **)&s_ladder_run_args,
+        },
+        {
+            .command = "run-stop",
+            .help    = "停止回放并关闭峰序列输出/落盘",
+            .hint    = NULL,
+            .func    = &cmd_run_stop,
+        },
+        {
+            .command  = "result-dump",
+            .help     = "把 SD 卡上的结果文件回传串口（单条对账/批处理汇总）",
+            .hint     = "<stem>  mit_105 | mit_all（批处理汇总）| xxx.txt",
+            .func     = &cmd_result_dump,
+            .argtable = (void **)&s_result_dump_args,
+        },
+        {
+            .command = "mit-run-all",
+            .help    = "登记跑 batch_mit.txt 全部 MIT 记录（写 SD 标记，重启后跑）",
+            .hint    = NULL,
+            .func    = &cmd_mit_run_all,
+        },
+        {
+            .command = "ladder-run-all",
+            .help    = "登记跑 batch_ladder.txt 心率阶梯（写 SD 标记，重启后跑）",
+            .hint    = NULL,
+            .func    = &cmd_ladder_run_all,
+        },
+        {
+            .command = "mit-list",
+            .help    = "列 SD 卡上的 MIT 记录（扫 /sdcard/ 与 /sdcard/s7_batch/）",
+            .hint    = NULL,
+            .func    = &cmd_mit_list,
+        },
+        {
+            .command = "ladder-list",
+            .help    = "列 SD 卡上的心率阶梯档位",
+            .hint    = NULL,
+            .func    = &cmd_ladder_list,
+        },
+        {
+            .command = "mit-set",
+            .help    = "指定要跑的 MIT 记录，写 /sdcard/batch_mit.txt",
+            .hint    = "<105,108> | all",
+            .func    = &cmd_mit_set,
+        },
+        {
+            .command = "ladder-set",
+            .help    = "指定要跑的阶梯档位，写 /sdcard/batch_ladder.txt",
+            .hint    = "<060,090> | all",
+            .func    = &cmd_ladder_set,
+        },
+        {
+            .command = "scan",
+            .help    = "递归列全卡 *.bin（含大小）",
+            .hint    = NULL,
+            .func    = &cmd_scan,
+        },
+        {
+            .command = "log",
+            .help    = "开/关串口日志级别 (off/error/warn/info/debug/verbose)",
+            .hint    = "<off|error|warn|info|debug|verbose>",
+            .func    = &cmd_log,
+        },
+        {
+            .command = "restart",
+            .help    = "软重启（登记批处理后用它触发重启）",
+            .hint    = NULL,
+            .func    = &cmd_restart,
+        },
+        /* ---- S9a：485 实时源 ---- */
+        {
+            .command = "485-start",
+            .help    = "启动 RS485 实时数据源（停掉当前 SD 回放）",
+            .hint    = "[baud]",
+            .func    = &cmd_485_start,
+        },
+        {
+            .command = "485-stop",
+            .help    = "停止 RS485 源，回到上电默认（SD 回放暂停态）",
+            .hint    = NULL,
+            .func    = &cmd_485_stop,
+        },
+        {
+            .command = "485-stat",
+            .help    = "打印 485 链路/解帧/环缓/心率统计",
+            .hint    = NULL,
+            .func    = &cmd_485_stat,
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
+    }
+}
+
+/* ============================================================================
+ * 对外接口
+ * ========================================================================== */
+
+esp_err_t cli_console_start(void)
+{
+    esp_console_repl_t *repl = NULL;
+    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+
+    repl_config.prompt = PROMPT_STR ">";
+    /* 关历史文件存储（本工程 SD 卡用 SPI 模式，不另起 wear-levelling 分区） */
+    repl_config.history_save_path = NULL;
+    /* 命令最长 256 字节，足够 argtable 参数 + 记录号列表 */
+    repl_config.max_cmdline_length = 256;
+
+    esp_console_register_help_command();
+    register_commands();
+
+    /* 内部自建 console_repl 任务，start 只发 notify，非阻塞 */
+    ESP_ERROR_CHECK(esp_console_new_repl_stdio(&repl_config, &repl));
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+
+    ESP_LOGI(TAG, "CLI 命令台已启动（提示符 %s>），test-mit/test-ladder/test-exit/status/scan",
+             PROMPT_STR);
+
+    return ESP_OK;
+}

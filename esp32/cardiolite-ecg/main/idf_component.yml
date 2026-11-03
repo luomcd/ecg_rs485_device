@@ -1,0 +1,18 @@
+dependencies:
+  idf:
+    version: ">=5.5.0"
+
+  # LVGL 8.4.0 实测可用。第一阶段不升 9.x（要重写显示适配层）。
+  lvgl/lvgl:
+    version: ">8.3.9,<9"
+    public: true
+
+  # 抗撕裂 / 触摸注册 / LVGL 任务管理。实装 0.5.3。
+  # ⚠ 它会传递引入 button / knob / esp_lv_fs / esp_lv_decoder / freetype /
+  #   libpng / zlib / esp_mmap_assets 共 8 个依赖，都不是本项目主动要的。
+  #   第一阶段若 flash 吃紧，优先查 esp_lv_decoder 与 freetype 能否裁。
+  espressif/esp_lvgl_adapter:
+    version: "^0.5.2"
+
+  espressif/esp_lcd_touch_gt911:
+    version: "^1"

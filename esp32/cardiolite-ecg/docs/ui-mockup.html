@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>CardioLite UI 仿真稿 v2 · 800x480</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #ECEBE7;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    padding: 24px 20px 40px;
+    display: flex; flex-direction: column; align-items: center;
+    color: #2C2C2A;
+  }
+  .page-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
+  .page-sub { font-size: 12px; color: #6B6A64; margin-bottom: 16px; }
+
+  .device {
+    width: 800px; height: 480px;
+    background: #101010; border-radius: 10px;
+    box-shadow: 0 0 0 6px #1C1C1C, 0 8px 28px rgba(0,0,0,0.22);
+    position: relative; overflow: hidden; user-select: none;
+  }
+  .screen { width: 800px; height: 480px; background: #F5F5F5; position: relative; overflow: hidden; }
+  canvas { display: block; position: absolute; left: 0; }
+  #cv1 { top: 0; width: 800px; height: 216px; }
+  #cv2 { top: 216px; width: 800px; height: 216px; }
+
+  .bpm-plate {
+    position: absolute; right: 10px; top: 8px;
+    background: rgba(255,255,255,0.9);
+    border: 1px solid #B8C4D4; border-radius: 5px;
+    padding: 2px 10px 3px; text-align: right; line-height: 1.05;
+  }
+  .bpm-num { font-size: 30px; font-weight: 500; color: #1B3A5C; font-variant-numeric: tabular-nums; }
+  .bpm-unit { font-size: 11px; color: #5A6D82; margin-left: 3px; }
+  .bpm-cap { font-size: 10px; color: #7A8899; }
+
+  .rec-plate {
+    position: absolute; right: 10px; top: 62px;
+    background: rgba(255,255,255,0.9);
+    border: 1px solid #C9A0A0; border-radius: 5px;
+    padding: 3px 9px; font-size: 12px; color: #A32D2D;
+    font-variant-numeric: tabular-nums; display: none;
+  }
+  .rec-plate.on { display: block; }
+
+  .btnbar {
+    position: absolute; left: 0; top: 432px; width: 800px; height: 48px;
+    background: #EFEEEA; border-top: 1px solid #D8D7D1;
+    display: flex; gap: 3px; padding: 4px;
+  }
+  .btn {
+    flex: 1 1 0; height: 40px;
+    background: #E4E3DE; border: 1px solid #C2C1BB; border-radius: 3px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    cursor: pointer; transition: background 0.08s, border-color 0.08s; line-height: 1.12;
+  }
+  .btn:hover { background: #DAD9D3; }
+  .btn .v { font-size: 13px; font-weight: 500; color: #2C2C2A; white-space: nowrap; }
+  .btn .l { font-size: 10px; color: #6E6D67; margin-top: 1px; white-space: nowrap; }
+  .btn.on { background: #4078BE; border-color: #285A96; }
+  .btn.on .v { color: #FFF; }
+  .btn.on .l { color: #D6E4F5; }
+  .btn.warn { background: #C0392B; border-color: #96271B; }
+  .btn.warn .v { color: #FFF; }
+  .btn.warn .l { color: #F5D5D1; }
+  .btn.dis { background: #EFEEEB; border-color: #DDDCD6; cursor: not-allowed; }
+  .btn.dis .v { color: #B4B2A9; }
+  .btn.dis .l { color: #C4C2BA; }
+  .btn.dis:hover { background: #EFEEEB; }
+
+  .mask {
+    position: absolute; inset: 0; background: rgba(20,20,20,0.42);
+    display: none; align-items: center; justify-content: center; z-index: 20;
+  }
+  .mask.on { display: flex; }
+  .dlg {
+    width: 420px; background: #FBFBF9; border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3); overflow: hidden;
+  }
+  .dlg-h { padding: 16px 20px 6px; font-size: 15px; font-weight: 500; color: #2C2C2A; }
+  .dlg-b { padding: 0 20px 16px; font-size: 13px; color: #5F5E5A; line-height: 1.7; }
+  .dlg-f { display: flex; gap: 10px; padding: 0 20px 16px; }
+  .dlg-f button {
+    flex: 1; height: 40px; border-radius: 5px; font-family: inherit;
+    font-size: 13px; cursor: pointer; border: 1px solid #C2C1BB; background: #EFEEEB; color: #2C2C2A;
+  }
+  .dlg-f button.danger { background: #C0392B; border-color: #96271B; color: #FFF; }
+  .dlg-f button:hover { filter: brightness(0.96); }
+
+  .demo-panel {
+    margin-top: 22px; width: 800px;
+    background: #FFF; border: 1px solid #D6D5CF; border-radius: 8px;
+    padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  }
+  .demo-panel .grp { display: flex; align-items: center; gap: 7px; }
+  .demo-panel .cap { font-size: 11px; color: #6B6A64; }
+  .demo-panel button {
+    font-family: inherit; font-size: 12px; padding: 5px 11px; border-radius: 5px;
+    border: 1px solid #C2C1BB; background: #F4F3EF; cursor: pointer; color: #2C2C2A;
+  }
+  .demo-panel button:hover { background: #E8E7E2; }
+  .demo-panel button.sel { background: #4078BE; border-color: #285A96; color: #fff; }
+  .note { width: 800px; margin-top: 12px; font-size: 11px; color: #77766F; line-height: 1.75; }
+  .note b { color: #2C2C2A; font-weight: 500; }
+  .note code { font-family: Consolas, monospace; background: #E8E7E2; padding: 1px 4px; border-radius: 3px; }
+
+  /* ---------- 深色主题（黑底白波 / 荧光绿） ---------- */
+  .screen.dark { background: #0F1216; }
+  .screen.dark .btnbar { background: #151A20; border-top-color: #2A323C; }
+  .screen.dark .btn { background: #242B34; border-color: #39424E; }
+  .screen.dark .btn .v { color: #D8DEE6; }
+  .screen.dark .btn .l { color: #8A949E; }
+  .screen.dark .btn:hover { background: #2C343E; }
+  .screen.dark .btn.on { background: #2F6FB5; border-color: #4A8AD0; }
+  .screen.dark .btn.warn { background: #B3352A; border-color: #D25548; }
+  .screen.dark .btn.dis { background: #1A1F26; border-color: #252C35; }
+  .screen.dark .btn.dis .v { color: #59636F; }
+  .screen.dark .btn.dis .l { color: #4A545E; }
+  .screen.dark .btn.dis:hover { background: #1A1F26; }
+  .screen.dark .bpm-plate { background: rgba(15,19,24,0.94); border-color: #39424E; }
+  .screen.dark .bpm-unit { color: #9AA5B1; }
+  .screen.dark .bpm-cap { color: #7A8591; }
+  .screen.dark .rec-plate { background: rgba(15,19,24,0.94); border-color: #7A3A3A; color: #FF8A8A; }
+  .screen.dark .dlg { background: #1A2028; }
+  .screen.dark .dlg-h { color: #E6ECF2; }
+  .screen.dark .dlg-b { color: #A9B4C0; }
+  .screen.dark .dlg-b b { color: #E6ECF2; }
+  .screen.dark .dlg-f button { background: #242B34; border-color: #39424E; color: #D8DEE6; }
+  .screen.dark .dlg-f button.danger { background: #B3352A; border-color: #D25548; color: #FFF; }
+  .screen.dark .bpm-num { color: #F2F6FA; }
+  .screen.dark.neon .bpm-num { color: #6BFFB0; }
+</style>
+</head>
+<body>
+
+<div class="page-title">CardioLite · ECG 显示终端 UI 仿真稿 v2</div>
+<div class="page-sub">实机尺寸 800 × 480 · 九按钮版 · 回放状态机可操作 · 长按「回放」1.5 秒弹删除确认</div>
+
+<div class="device">
+  <div class="screen" id="screen">
+    <canvas id="cv1" width="1600" height="432"></canvas>
+    <canvas id="cv2" width="1600" height="432"></canvas>
+
+    <div class="bpm-plate">
+      <div><span class="bpm-num" id="bpmNum">--</span><span class="bpm-unit">bpm</span></div>
+      <div class="bpm-cap" id="bpmCap">心率</div>
+    </div>
+    <div class="rec-plate" id="recPlate">REC 00:00</div>
+
+    <div class="btnbar" id="btnbar">
+      <!-- 单行居中（2026-10-23 实机对齐）：85 px 宽放两行太挤，主副行合并成一行 -->
+      <div class="btn dis" data-act="run"><span class="v" id="b_run">开始</span></div>
+      <div class="btn" data-act="freeze"><span class="v" id="b_freeze">冻结</span></div>
+      <div class="btn" data-act="clear"><span class="v" id="b_clear">清屏</span></div>
+      <div class="btn" data-act="gain"><span class="v" id="b_gain">5mm/mV</span></div>
+      <div class="btn" data-act="paper"><span class="v" id="b_paper">25mm/s</span></div>
+      <div class="btn dis" data-act="mode"><span class="v" id="b_mode">诊断</span></div>
+      <div class="btn dis" data-act="notch"><span class="v" id="b_notch">陷波ON</span></div>
+      <div class="btn" data-act="chan"><span class="v" id="b_chan">通道I</span></div>
+      <div class="btn" data-act="replay" id="btnReplay"><span class="v" id="b_replay">回放</span></div>
+    </div>
+
+    <div class="mask" id="mask">
+      <div class="dlg">
+        <div class="dlg-h">删除录制数据？</div>
+        <div class="dlg-b">
+          将删除 SD 卡上的 <b>ecg.bin</b>（89.8 秒，1796 帧）。<br>
+          此操作不可恢复，删除后「回放」按钮将变为不可用。
+        </div>
+        <div class="dlg-f">
+          <button id="dlgCancel">取消</button>
+          <button class="danger" id="dlgOk">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="demo-panel">
+  <div class="grp"><span class="cap">演示场景</span>
+    <button id="s_replay" class="sel">回放 · 有数据</button>
+    <button id="s_empty">回放 · 无数据</button>
+    <button id="s_live">实时 · 第二阶段</button>
+  </div>
+  <div class="grp"><span class="cap">配色</span>
+    <button id="t_light" class="sel">浅色纸</button>
+    <button id="t_dark">黑底白波</button>
+    <button id="t_neon">黑底荧光绿</button>
+  </div>
+  <div class="grp"><span class="cap">心率</span>
+    <button data-hr="60">60</button>
+    <button data-hr="72" class="sel">72</button>
+    <button data-hr="120">120</button>
+  </div>
+  <div class="grp"><span class="cap">数据</span>
+    <button id="d_dual" class="sel">双通道文件</button>
+    <button id="d_single">单通道文件</button>
+  </div>
+</div>
+
+<div class="note">
+  <b>怎么试</b>：① 短按第九个按钮「回放」→ 开始播放，再按暂停 / 继续；② <b>按住它 1.5 秒</b> → 弹删除确认；③ 切到「回放 · 无数据」→ 第九个按钮置灰；④ 切到「实时 · 第二阶段」→ 前八个按钮全部可用，点「开始」后第九个按钮变「记录」，再点开始计时；⑤ 顶部「配色」可在 <b>浅色纸 / 黑底白波 / 黑底荧光绿</b> 之间实时切换。<br>
+  <b>说明</b>：第一阶段（回放）下 <code>采集 / 模式 / 陷波 / 通道</code> 四个按钮灰显不可点 —— 回放没有采集端，这三个参数无从改动，这是刻意设计，不是缺陷。记录功能是第二阶段的，此处仅用于确认界面形态。
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var W = 800, CANVAS_H = 216;
+  var PAD_X = 8, PAD_Y = 8, RIGHT_RESERVE = 40;
+  var PLOT_W = W - PAD_X - RIGHT_RESERVE;
+  var PLOT_H = CANVAS_H - PAD_Y * 2;
+  var PAPER_REF_MM = 125, RANGE_MV = 5, FULL_MM = 2 * RANGE_MV * 5;
+  var FS = 500, MAX = FS * 10;
+  var FILE_SECONDS = 89.8;          // 对应 ecg_20260929_093408.bin（LEN=53，1796 帧）的真实时长
+
+  // ---------- 配色方案 ----------
+  var THEMES = {
+    light: {
+      cls: "", bg: "#F5F5F5",
+      gridMinor: "#E2E2E2", gridMajor: "#C6C6C6", base: "#A8A8A8",
+      ch1: "#1B5E20", ch2: "#0D47A1", peak: "#C62828",
+      cal: "#3A3A3A", calText: "#555555", label: "#5B5B5B",
+      overlay: "#8A8A8A", freezePlate: "rgba(245,245,245,0.9)", freezeText: "#6A6A6A"
+    },
+    dark: {
+      cls: "dark", bg: "#0F1216",
+      gridMinor: "#1C222A", gridMajor: "#2A323C", base: "#3C4652",
+      ch1: "#FFFFFF", ch2: "#6FA8DC", peak: "#FF5252",
+      cal: "#9FA8B2", calText: "#8A949E", label: "#8A949E",
+      overlay: "#7C8794", freezePlate: "rgba(15,18,22,0.9)", freezeText: "#C3CBD4"
+    },
+    neon: {
+      cls: "dark neon", bg: "#080C0A",
+      gridMinor: "#132018", gridMajor: "#1E3226", base: "#2A4436",
+      ch1: "#3DFF8B", ch2: "#39C7FF", peak: "#FF5252",
+      cal: "#7FD3A5", calText: "#5FA97F", label: "#5FA97F",
+      overlay: "#4E7A61", freezePlate: "rgba(8,12,10,0.9)", freezeText: "#A8E8C4"
+    }
+  };
+  var themeKey = "dark";   // 上电默认深色 B 套（2026-10-23 实机拍板）
+  function TH() { return THEMES[themeKey]; }
+
+  var ui = {
+    stage: "replay",          // replay | live
+    sdHasFile: true,
+    replay: "idle",           // idle | playing | paused | ended
+    liveStarted: false,
+    recording: false,
+    recStart: 0,
+    frozen: false,
+    gain: 5,
+    paper: 25,
+    mode: "diag",
+    notch: false,
+    chan: 1,
+    dual: true,
+    hr: 72
+  };
+
+  var playPos = 0;            // 已播放秒数
+  var buf1 = new Float32Array(MAX), buf2 = new Float32Array(MAX);
+  var head = 0, count = 0, sampleIndex = 0;
+  var peaks = [], lastBpm = null;
+
+  function ecg(t, hr, lead) {
+    var rr = 60 / hr;
+    var p = ((t % rr) + rr) % rr / rr;
+    function g(c, w, a) { var d = (p - c) / w; return a * Math.exp(-0.5 * d * d); }
+    var v = 0;
+    v += g(0.150, 0.023, 0.13);
+    v += g(0.236, 0.007, -0.13);
+    v += g(0.250, 0.0075, lead === 1 ? 1.15 : 0.82);
+    v += g(0.268, 0.010, -0.23);
+    v += g(0.450, 0.058, lead === 1 ? 0.30 : -0.16);
+    v += 0.018 * Math.sin(2 * Math.PI * 0.23 * t);
+    v += (Math.random() - 0.5) * 0.012;
+    return v;
+  }
+
+  function pushSamples(n) {
+    for (var i = 0; i < n; i++) {
+      var t = sampleIndex / FS;
+      buf1[head] = ecg(t, ui.hr, 1);
+      buf2[head] = ecg(t, ui.hr, 2);
+      var rr = 60 / ui.hr;
+      var p0 = ((sampleIndex - 1) / FS % rr + rr) % rr / rr;
+      var p1 = (sampleIndex / FS % rr + rr) % rr / rr;
+      if (p0 < 0.250 && p1 >= 0.250) { peaks.push(sampleIndex); if (peaks.length > 200) peaks.shift(); }
+      head = (head + 1) % MAX;
+      if (count < MAX) count++;
+      sampleIndex++;
+    }
+  }
+
+  function mmX() { return PLOT_W / PAPER_REF_MM; }
+  function mmY() { return PLOT_H / FULL_MM; }
+  function pxPerSample() { return mmX() * ui.paper / FS; }
+  function pxPerMv() { return ui.gain * mmY(); }
+
+  function drawCanvas(ctx, ch) {
+    var th = TH();
+    var s = 2;
+    ctx.setTransform(s, 0, 0, s, 0, 0);
+    ctx.clearRect(0, 0, W, CANVAS_H);
+    ctx.fillStyle = th.bg;
+    ctx.fillRect(0, 0, W, CANVAS_H);
+
+    var bx = PAD_X, by = PAD_Y, bw = PLOT_W, bh = PLOT_H;
+    var mX = mmX(), mY = mmY();
+    var stepX = mX >= 1 ? mX : mX * 5, majorX = mX >= 1 ? 5 : 1;
+    var stepY = mY >= 1 ? mY : mY * 5, majorY = mY >= 1 ? 5 : 1;
+    var i, x, y;
+
+    ctx.lineWidth = 0.5; ctx.strokeStyle = th.gridMinor; ctx.beginPath();
+    for (i = 0; bx + i * stepX <= bx + bw + 0.5; i++) {
+      if (i % majorX === 0) continue;
+      x = Math.round(bx + i * stepX) + 0.5; ctx.moveTo(x, by); ctx.lineTo(x, by + bh);
+    }
+    for (i = 0; by + i * stepY <= by + bh + 0.5; i++) {
+      if (i % majorY === 0) continue;
+      y = Math.round(by + i * stepY) + 0.5; ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y);
+    }
+    ctx.stroke();
+
+    ctx.lineWidth = 0.65; ctx.strokeStyle = th.gridMajor; ctx.beginPath();
+    for (i = 0; bx + i * stepX <= bx + bw + 0.5; i++) {
+      if (i % majorX !== 0) continue;
+      x = Math.round(bx + i * stepX) + 0.5; ctx.moveTo(x, by); ctx.lineTo(x, by + bh);
+    }
+    for (i = 0; by + i * stepY <= by + bh + 0.5; i++) {
+      if (i % majorY !== 0) continue;
+      y = Math.round(by + i * stepY) + 0.5; ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y);
+    }
+    ctx.stroke();
+
+    var baseY = by + bh / 2;
+    ctx.lineWidth = 0.8; ctx.strokeStyle = th.base; ctx.beginPath();
+    ctx.moveTo(bx, Math.round(baseY) + 0.5); ctx.lineTo(bx + bw, Math.round(baseY) + 0.5);
+    ctx.stroke();
+
+    var amp = Math.max(8, ui.gain * mY);
+    var cx = bx + 12, cy = by + 34 + amp;
+    ctx.lineWidth = 1.4; ctx.strokeStyle = th.cal; ctx.beginPath();
+    ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - amp);
+    ctx.lineTo(cx + amp, cy - amp); ctx.lineTo(cx + amp, cy);
+    ctx.lineTo(cx + amp * 2, cy); ctx.stroke();
+    ctx.fillStyle = th.calText; ctx.font = "10px 'Microsoft YaHei', sans-serif";
+    ctx.fillText("1 mV", cx + 2, cy + 12);
+
+    ctx.font = "12px 'Microsoft YaHei', sans-serif"; ctx.fillStyle = th.label;
+    ctx.fillText(ch === 1 ? "导联 I · CH1 = IN2−IN1" : "导联 II · CH2 = IN3−IN1", bx + 4, by + 14);
+
+    var visibleS = PAPER_REF_MM / ui.paper;
+    var rightTxt = (ch === 2 && !ui.dual) ? "无数据" : (visibleS.toFixed(1) + " s 窗口 / " + FS.toFixed(1) + " Hz");
+    ctx.textAlign = "right";
+    ctx.fillText(rightTxt, bx + bw - 4, by + (ch === 1 ? 68 : 14));
+    ctx.textAlign = "left";
+
+    var noData = (ch === 2 && !ui.dual);
+    if (noData) {
+      ctx.textAlign = "center"; ctx.fillStyle = th.overlay;
+      ctx.font = "14px 'Microsoft YaHei', sans-serif";
+      ctx.fillText("单通道文件（导联 I）— 画布 2 无数据", bx + bw / 2, by + bh / 2);
+      ctx.textAlign = "left";
+      return;
+    }
+
+    var pps = pxPerSample();
+    var need = Math.min(count, Math.ceil(visibleS * FS));
+    if (need < 2) {
+      ctx.textAlign = "center"; ctx.fillStyle = th.overlay;
+      ctx.font = "14px 'Microsoft YaHei', sans-serif";
+      if (ch === 1 && !ui.sdHasFile) ctx.fillText("SD 卡无数据文件 — 请插入含 ecg.bin 的卡", bx + bw / 2, by + bh / 2);
+      ctx.textAlign = "left";
+      return;
+    }
+
+    var src = ch === 1 ? buf1 : buf2;
+    var ppmv = pxPerMv();
+    ctx.lineWidth = 1.3;
+    ctx.strokeStyle = ch === 1 ? th.ch1 : th.ch2;
+    ctx.beginPath();
+    for (i = 0; i < need; i++) {
+      var idx = (head - need + i + MAX * 2) % MAX;
+      var px = bx + bw - (need - 1 - i) * pps;
+      var py = baseY - src[idx] * ppmv;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    var firstIdx = sampleIndex - need;
+    for (i = 0; i < peaks.length; i++) {
+      var pk = peaks[i];
+      if (pk < firstIdx || pk >= sampleIndex) continue;
+      var rel = pk - firstIdx;
+      var px2 = bx + bw - (need - 1 - rel) * pps;
+      var bIdx = (head - need + rel + MAX * 2) % MAX;
+      var py2 = baseY - src[bIdx] * ppmv;
+      ctx.beginPath(); ctx.arc(px2, Math.max(by + 5, py2 - 10), 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = th.peak; ctx.fill();
+    }
+
+    if (ui.frozen) {
+      ctx.textAlign = "center";
+      ctx.font = "14px 'Microsoft YaHei', sans-serif";
+      var label = "已冻结 — 点「冻结」恢复";
+      var tw = ctx.measureText(label).width;
+      ctx.fillStyle = th.freezePlate;
+      ctx.fillRect(bx + bw / 2 - tw / 2 - 10, baseY - 12, tw + 20, 24);
+      ctx.fillStyle = th.freezeText;
+      ctx.fillText(label, bx + bw / 2, baseY + 5);
+      ctx.textAlign = "left";
+    }
+  }
+
+  var ctx1 = document.getElementById("cv1").getContext("2d");
+  var ctx2 = document.getElementById("cv2").getContext("2d");
+
+  function render() {
+    drawCanvas(ctx1, 1);
+    drawCanvas(ctx2, 2);
+    document.getElementById("bpmNum").textContent = (lastBpm && count > 500) ? lastBpm : "--";
+    var rp = document.getElementById("recPlate");
+    if (ui.recording) {
+      var sec = Math.floor((Date.now() - ui.recStart) / 1000);
+      rp.textContent = "REC " + String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+    }
+  }
+
+  // ---------- 按钮状态刷新 ----------
+  function refreshButtons() {
+    var bRun = document.querySelector('[data-act="run"]');
+    var bMode = document.querySelector('[data-act="mode"]');
+    var bNotch = document.querySelector('[data-act="notch"]');
+    var bChan = document.querySelector('[data-act="chan"]');
+    var bRep = document.getElementById("btnReplay");
+    var replayMode = (ui.stage === "replay");
+
+    // 采集按钮：第一阶段灰显
+    bRun.classList.toggle("dis", replayMode && !ui.liveStarted);
+    document.querySelector("#b_run").textContent = ui.liveStarted ? "停止" : "开始";
+    bRun.classList.toggle("warn", ui.liveStarted && !ui.recording);
+
+    // 模式/陷波：第一阶段灰显（属采集端命令 0x04/0x05，回放无采集端可改）
+    // 通道：**第一阶段放开**（2026-10-23 实机验证）—— 程序会按首帧 LEN 自动切到
+    //       单通道(LEN=53)或双通道(LEN=103)数据文件，切到 II 后画布 2 画 CH2。
+    [bMode, bNotch].forEach(function (b) { b.classList.toggle("dis", replayMode); });
+
+    // 第九个按钮
+    bRep.classList.remove("on", "warn", "dis");
+    var v = document.getElementById("b_replay");
+    if (ui.stage === "live" && ui.liveStarted) {
+      v.textContent = ui.recording ? "停止" : "记录";
+      if (ui.recording) bRep.classList.add("warn");
+    } else if (replayMode) {
+      if (!ui.sdHasFile) {
+        v.textContent = "回放";
+        bRep.classList.add("dis");
+      } else if (ui.replay === "playing") {
+        v.textContent = "暂停"; bRep.classList.add("on");
+      } else if (ui.replay === "paused") {
+        v.textContent = "播放"; bRep.classList.add("on");
+      } else if (ui.replay === "ended") {
+        v.textContent = "重播";
+      } else {
+        v.textContent = "回放";
+      }
+    } else {
+      v.textContent = ui.sdHasFile ? "回放" : "回放";
+      if (!ui.sdHasFile) bRep.classList.add("dis");
+    }
+  }
+
+  // ---------- 长按删除 ----------
+  var pressTimer = null, longPressed = false;
+  var btnReplay = document.getElementById("btnReplay");
+  var mask = document.getElementById("mask");
+
+  btnReplay.addEventListener("pointerdown", function () {
+    longPressed = false;
+    if (btnReplay.classList.contains("dis")) return;
+    pressTimer = setTimeout(function () {
+      pressTimer = null; longPressed = true;
+      mask.classList.add("on");
+    }, 1500);
+  });
+  btnReplay.addEventListener("pointerup", function () {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    if (longPressed) { longPressed = false; return; }
+    if (btnReplay.classList.contains("dis")) return;
+    onReplayClick();
+  });
+  btnReplay.addEventListener("pointerleave", function () {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  });
+
+  function onReplayClick() {
+    if (ui.stage === "live" && ui.liveStarted) {
+      ui.recording = !ui.recording;
+      if (ui.recording) { ui.recStart = Date.now(); }
+      document.getElementById("recPlate").classList.toggle("on", ui.recording);
+      refreshButtons();
+      return;
+    }
+    if (!ui.sdHasFile) return;
+    if (ui.replay === "idle" || ui.replay === "ended") {
+      if (ui.replay === "ended") { head = 0; count = 0; peaks = []; lastBpm = null; sampleIndex = 0; playPos = 0; }
+      ui.replay = "playing";
+    } else if (ui.replay === "playing") {
+      ui.replay = "paused";
+    } else if (ui.replay === "paused") {
+      ui.replay = "playing";
+    }
+    refreshButtons();
+  }
+
+  document.getElementById("dlgCancel").addEventListener("click", function () {
+    mask.classList.remove("on");
+  });
+  document.getElementById("dlgOk").addEventListener("click", function () {
+    mask.classList.remove("on");
+    ui.sdHasFile = false;
+    ui.replay = "idle";
+    head = 0; count = 0; peaks = []; lastBpm = null; sampleIndex = 0; playPos = 0;
+    refreshButtons();
+  });
+
+  // ---------- 其它按钮 ----------
+  document.getElementById("btnbar").addEventListener("click", function (e) {
+    var b = e.target.closest(".btn");
+    if (!b || b.classList.contains("dis")) return;
+    var act = b.dataset.act;
+    if (act === "run") {
+      if (ui.stage === "replay") return;
+      ui.liveStarted = !ui.liveStarted;
+      if (!ui.liveStarted && ui.recording) {
+        ui.recording = false;
+        document.getElementById("recPlate").classList.remove("on");
+      }
+    } else if (act === "freeze") {
+      ui.frozen = !ui.frozen;
+      document.getElementById("b_freeze").textContent = ui.frozen ? "继续" : "冻结";
+      b.classList.toggle("on", ui.frozen);
+    } else if (act === "clear") {
+      head = 0; count = 0; peaks = []; lastBpm = null; sampleIndex = 0; playPos = 0;
+    } else if (act === "gain") {
+      var gs = [2.5, 5, 10, 20];
+      ui.gain = gs[(gs.indexOf(ui.gain) + 1) % gs.length];
+      document.getElementById("b_gain").textContent = ui.gain + "mm/mV";
+    } else if (act === "paper") {
+      var ps = [12.5, 25, 50];
+      ui.paper = ps[(ps.indexOf(ui.paper) + 1) % ps.length];
+      document.getElementById("b_paper").textContent = ui.paper + "mm/s";
+    } else if (act === "mode") {
+      ui.mode = ui.mode === "diag" ? "mon" : "diag";
+      document.getElementById("b_mode").textContent = ui.mode === "diag" ? "诊断" : "监护";
+      b.classList.toggle("on", ui.mode === "mon");
+    } else if (act === "notch") {
+      ui.notch = !ui.notch;
+      document.getElementById("b_notch").textContent = ui.notch ? "陷波ON" : "陷波OFF";
+      b.classList.toggle("on", ui.notch);
+    } else if (act === "chan") {
+      ui.chan = ui.chan === 1 ? 2 : 1;
+      // 与实机一致：切到通道 II 就去读双通道文件（LEN=103），画布 2 画 CH2
+      ui.dual = (ui.chan === 2);
+      document.getElementById("b_chan").textContent = ui.chan === 1 ? "通道I" : "通道II";
+      b.classList.toggle("on", ui.chan === 2);
+    }
+    refreshButtons();
+  });
+
+  // ---------- 演示场景 ----------
+  function setScene(id) {
+    ["s_replay", "s_empty", "s_live"].forEach(function (k) {
+      document.getElementById(k).classList.toggle("sel", k === id);
+    });
+    head = 0; count = 0; peaks = []; lastBpm = null; sampleIndex = 0; playPos = 0;
+    ui.recording = false;
+    document.getElementById("recPlate").classList.remove("on");
+    document.getElementById("b_freeze").textContent = "冻结";
+    document.querySelector('[data-act="freeze"]').classList.remove("on");
+    ui.frozen = false;
+    if (id === "s_replay") {
+      ui.stage = "replay"; ui.sdHasFile = true; ui.replay = "playing"; ui.liveStarted = false;
+    } else if (id === "s_empty") {
+      ui.stage = "replay"; ui.sdHasFile = false; ui.replay = "idle"; ui.liveStarted = false;
+    } else {
+      ui.stage = "live"; ui.sdHasFile = true; ui.replay = "idle"; ui.liveStarted = false;
+    }
+    refreshButtons();
+  }
+  ["s_replay", "s_empty", "s_live"].forEach(function (id) {
+    document.getElementById(id).addEventListener("click", function () { setScene(id); });
+  });
+
+  // ---------- 配色切换 ----------
+  function setTheme(k) {
+    themeKey = k;
+    document.getElementById("screen").className = "screen " + (THEMES[k].cls || "");
+    ["light", "dark", "neon"].forEach(function (t) {
+      document.getElementById("t_" + t).classList.toggle("sel", t === k);
+    });
+  }
+  ["light", "dark", "neon"].forEach(function (k) {
+    document.getElementById("t_" + k).addEventListener("click", function () { setTheme(k); });
+  });
+
+  document.getElementById("d_dual").addEventListener("click", function () {
+    ui.dual = true; ui.chan = 2;
+    // 场景切换要与通道按钮同步，否则会出现「通道I」却显示双通道的矛盾
+    document.getElementById("b_chan").textContent = "通道II";
+    this.classList.add("sel");
+    document.getElementById("d_single").classList.remove("sel");
+  });
+  document.getElementById("d_single").addEventListener("click", function () {
+    ui.dual = false; ui.chan = 1;
+    document.getElementById("b_chan").textContent = "通道I";
+    this.classList.add("sel");
+    document.getElementById("d_dual").classList.remove("sel");
+  });
+
+  var hrBtns = document.querySelectorAll("[data-hr]");
+  Array.prototype.forEach.call(hrBtns, function (b) {
+    b.addEventListener("click", function () {
+      ui.hr = parseInt(b.dataset.hr, 10);
+      Array.prototype.forEach.call(hrBtns, function (x) { x.classList.remove("sel"); });
+      b.classList.add("sel");
+      peaks = []; lastBpm = null;
+    });
+  });
+
+  // ---------- 数据推进 ----------
+  var acc = 0, lastT = performance.now();
+  function loop(now) {
+    var dt = now - lastT; lastT = now;
+    if (dt > 200) dt = 200;
+    var advancing = (ui.stage === "live" && ui.liveStarted) ||
+                    (ui.stage === "replay" && ui.replay === "playing");
+    if (advancing && !ui.frozen && ui.sdHasFile) {
+      acc += dt;
+      while (acc >= 50) {
+        pushSamples(25); acc -= 50;
+        playPos += 0.05;
+        if (ui.stage === "replay" && playPos >= FILE_SECONDS) {
+          ui.replay = "ended";
+          refreshButtons();
+          break;
+        }
+      }
+    }
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  pushSamples(FS * 6);
+  setScene("s_replay");
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
