@@ -21,6 +21,10 @@ esp32/cardiolite-ecg/managed_components/
 esp32/cardiolite-ecg/sdkconfig.old
 esp32/cardiolite-ecg/dependencies.lock
 
+# --- 本地改前备份副本（**目录**，靠 git 历史就够，不入库） ---
+# ⚠ 只忽略目录：stm32/tools/ 下那些 `_bak_*.py` 是**文件**、属历史记录，仍在库里。
+**/_bak_*/
+
 # --- 项目记忆 / 编辑器本地态 ---
 **/.workbuddy/
 **/.vscode/launch.json
