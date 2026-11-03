@@ -19,6 +19,14 @@
 /EWARM/demo_ads1293/.eide/*
 !/EWARM/demo_ads1293/.eide/eide.yml
 !/EWARM/demo_ads1293/.eide/files.options.yml
+# 🛑 2026-11-03 猛哥拍板：第三方库与大文件**不推远端仓库**。
+#   理由：Drivers 单目录 96 MB（其中 CMSIS/DSP 46 MB 预编译 .a/.lib、CMSIS/Device 35 MB
+#   含 20+ 个 L4 型号头），入库会把仓库从 2.87 MB 顶到 56 MB，而这些都能从
+#   STM32Cube FW_L4 包重建。
+#   ⚠ 代价（已知并接受）：**clone 下来不能直接构建**，需自备下列目录。
+#   📌 补齐清单、验收条件、以及「USB_DEVICE 其实只有 72 KB 且含本项目自有代码
+#      usbd_cdc_if.c，将来独立分发时应优先补入」这条例外，全部记在
+#      **README.md §7「不入库的依赖」** —— 动这三条之前先读那一节。
 /Drivers
 /Middlewares
 /USB_DEVICE
