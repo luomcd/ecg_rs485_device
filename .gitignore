@@ -25,6 +25,9 @@ esp32/cardiolite-ecg/dependencies.lock
 # ⚠ 只忽略目录：stm32/tools/ 下那些 `_bak_*.py` 是**文件**、属历史记录，仍在库里。
 **/_bak_*/
 
+# --- ESP-IDF 构建日志（单次编译就 200 KB+，纯再生量，不入库） ---
+esp32/_build_*.log
+
 # --- 项目记忆 / 编辑器本地态 ---
 **/.workbuddy/
 **/.vscode/launch.json
