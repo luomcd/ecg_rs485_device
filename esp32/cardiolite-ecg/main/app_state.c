@@ -47,11 +47,21 @@ bool app_action_clear(void)
     if (!s_st.file_ok) {
         return false;
     }
-    /* 清屏语义（需求 §8.4）：波形缓冲由调用方清；这里把回放位置归零。
-     * 冻结状态下清屏 = 解冻后从空白开始，所以顺手解冻。 */
+    /* ★T212（2026-11-06 猛哥拍板方案 B）：**清屏只清视觉，不改播放状态、不归零位置**。
+     *
+     * 🛑 旧版这里写 `s_st.play = APP_PLAY_IDLE`（配合「清屏 = 回放位置归零」的
+     *   §8.4 旧口径）。它与「清屏不改变播放状态」**自相矛盾**，因为按钮文字由
+     *   `play` 驱动（`ui_button_bar.c:505`）：
+     *     ① 播放中点清屏 ⇒ 按钮从「暂停」跳成「回放」，而管线其实还在跑；
+     *     ② 第二次点清屏时 `prev_play` 已残留为 IDLE ⇒ 走「非播放」分支补 pause
+     *        ⇒ **同一个键，第一次是重播、第二次是暂停**（11-06 实测就是这个）。
+     * ⇒ 现在 `play` 一律不动，按钮文字恒等于真实状态。
+     *
+     * §8.4 的「回放位置归零」已随本改动撤销（改为「清屏不倒退进度」）；
+     *   要重新从头看，按「回放」键 —— 它自己会 restart（`app_state.c:58`）。
+     * 冻结仍按旧口径解除：清屏后从空白开始画，不该还停在冻结。 */
     s_st.frozen = false;
-    s_st.play   = APP_PLAY_IDLE;
-    ESP_LOGI(TAG, "clear -> idle, unfrozen");
+    ESP_LOGI(TAG, "clear -> visual only, play=%d kept", (int)s_st.play);
     return true;
 }
 

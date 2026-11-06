@@ -46,8 +46,10 @@ const app_state_t *app_state_ro(void);
 bool app_action_freeze(void);
 
 /**
- * @brief 动作：清屏（清波形缓冲 + 归零回放位置）。
+ * @brief 动作：清屏（只清视觉：波形缓冲 / R 峰队列 / BPM）。
  * @note  实际清缓冲由调用方调 ui_waveform_clear()；本函数只改状态。
+ * @note  ★T212（2026-11-06 方案 B）：**不改 `play`、不归零回放位置**。
+ *        旧版把 `play` 置 IDLE，导致按钮文字与实际播放状态分家。
  */
 bool app_action_clear(void);
 

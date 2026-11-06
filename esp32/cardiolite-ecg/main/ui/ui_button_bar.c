@@ -150,38 +150,30 @@ static void on_btn_click(lv_event_t *e)
         break;
 
     case BTN_CLEAR: {
-        /* ★T211（11-05）：**清屏不改变播放状态**。
+        /* ★T212（2026-11-06 猛哥拍板方案 B）：**清屏 = 只清视觉，不动播放状态、不动回放位置**。
          *
-         * 🛑 症状：暂停态点「清屏」⇒ 波形自己跑出来。
-         *   根因是 `ecg_pipeline_restart()` 里有 `s_paused = false`
-         *   （"重播隐含恢复"，`ecg_pipeline.c:930`），再配合 FILE 生产者看到
-         *   `s_restart` 就 `fseek(f, 0, SEEK_SET)`（`:534-547`）⇒
-         *   **一次清屏 = 清画布 + 解除暂停 + 从头重播**。
+         * 与 T211 的差别（T211 的补丁已在 T212 里整段撤掉）：
+         *   T211 的做法＝`restart()` 归零 + 按 `prev_play` 按需补 `pause()`；
+         *   而 `app_action_clear()` 当时又把自己的 `play` 强改成 IDLE ⇒
+         *   **同一个键两次点击行为相反**：播放态第一次点是「从头重播」，
+         *   第二次点却变成「暂停」（因为 play 已被上一次改成 IDLE）。
+         *   现在：位置原地不动，`ui_waveform_clear()` 只清显示缓冲 ⇒ 画面空白后，
+         *   **后续样本从左侧接着铺**（不重复、不倒退）。
          *
-         * 🛑 不能改 `restart()` 本身：下面 `BTN_REPLAY` 的 `APP_PLAY_ENDED` /
-         *   `APP_PLAY_IDLE` 两个分支**正是靠它的"隐含恢复"来起播**的。
-         * ⇒ 只能在这里补：先记原播放态，清完按需再 pause 一次。
+         * 🛑 不再调用 `ecg_pipeline_restart()`：它会 `fseek(f, 0, SEEK_SET)`
+         *   （`ecg_pipeline.c:538`）⇒ 5 分钟数据在 1 分钟处清屏，会把进度拨回 0，
+         *   白白重看 1 分钟。要「从头看」请按「回放」键（`app_state.c:58` 分支自己 restart）。
          *
-         * ⚠ `app_action_clear()` 会把 `play` 置成 `APP_PLAY_IDLE`（`app_state.c:53`），
-         *   所以 `prev_play` **必须在它之前取**。
-         * ⚠ 485 源下 `s_paused` 无人消费（485 生产者不看它，`ecg_pipeline.c:527`
-         *   只在 FILE 分支），所以这两步在实时源下是空操作，不会误停采集。 */
-        const app_play_t prev_play = st->play;
-
+         * ⚠ 冻结仍解除：§8.4 未变的部分要求清完从空白开始画，不该还停在冻结。
+         * ⚠ 485 实时源下本键与以前完全一样是「纯视觉」：485 生产者本来就不看
+         *   `s_restart` / `s_paused`。 */
         if (app_action_clear()) {
             ui_waveform_clear();
             ui_waveform_set_frozen(false);
-            /* 需求 §8.4：清屏 = 清波形缓冲 + **清 R 峰队列 + BPM 归 `--`** + 回放位置归零。
-             * restart 会让生产者重置检测器（epoch+1），本地对齐由 sync_rpeaks 跟进；
-             * 这里直接把浮层刷成 `--`，不等 200 ms 的刷新周期。 */
+            /* 需求 §8.4：清波形缓冲 + **清 R 峰队列 + BPM 归 `--`**（位置归零一项已撤销）。
+             * 检测器由生产者重置（epoch+1），本地浮层立刻刷 `--`，不等 200 ms 刷新周期。 */
             ecg_pipeline_rpeak_reset();
             ui_bpm_reset();
-            ecg_pipeline_restart();     /* 回放位置归零（需求 §8.4） */
-
-            /* 原来没在播（暂停 / 播完 / idle）⇒ 清完保持不播 */
-            if (prev_play != APP_PLAYING) {
-                ecg_pipeline_pause();
-            }
         }
         break;
     }
