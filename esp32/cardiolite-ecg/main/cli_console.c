@@ -1238,6 +1238,36 @@ static int cmd_restart(int argc, char **argv)
     return 0;
 }
 
+/* ---- ui-clear：执行一次清屏（与屏上「清屏」键同一段，★T212）----
+ *
+ * 为什么需要它：清屏只能点屏 ⇒ 自动化验收（`_t211_clear_probe.py --trigger cli`）
+ * 触发不了，回归只能靠人手点。本命令把动作暴露给 CLI，脚本即可自己跑闭环。
+ *
+ * 🛑 只覆盖**动作层**（`ui_clear_apply()`），不覆盖 LVGL 事件分发
+ *   （`on_btn_click` 的 `case BTN_CLEAR`）。事件路径改动过就必须人手点一次确认
+ *   —— 别拿本命令的通过去证明"按钮也能用"。
+ * 🛑 必须持 LVGL 锁：`ui_bpm_reset()` / `ui_button_bar_refresh()` 都会动 lv 对象；
+ *   本函数跑在 console 任务里，不持锁直接改 LVGL 是未定义行为。 */
+static int cmd_ui_clear(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!app_state_ro()->file_ok) {
+        printf("无数据文件 ⇒ 清屏无意义（与屏上灰键一致）\n");
+        return 1;
+    }
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        printf("拿不到 LVGL 锁，清屏未执行\n");
+        return 1;
+    }
+    ui_clear_apply();
+    esp_lv_adapter_unlock();
+
+    printf("清屏已执行：只清视觉（波形 / R 峰 / BPM），不改播放状态、不归零位置\n");
+    return 0;
+}
+
 /* ---- log：开/关串口日志级别 ----
  * 上电默认全局日志被压到 ERROR（见 main.c 的 app_main 开头），串口干净。
  * 调试时按需 `log info/debug/verbose` 打开，`log off` 关回全静默。 */
@@ -1739,6 +1769,12 @@ static void register_commands(void)
             .help    = "软重启（登记批处理后用它触发重启）",
             .hint    = NULL,
             .func    = &cmd_restart,
+        },
+        {
+            .command = "ui-clear",
+            .help    = "执行一次清屏（与屏上「清屏」键同一段；T212 只清视觉）",
+            .hint    = NULL,
+            .func    = &cmd_ui_clear,
         },
         /* ---- S9a：485 实时源 ---- */
         {

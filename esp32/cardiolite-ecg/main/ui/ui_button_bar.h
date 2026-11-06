@@ -40,5 +40,20 @@ esp_err_t ui_button_bar_create(lv_obj_t *scr);
  */
 void ui_button_bar_refresh(void);
 
+/**
+ * @brief ★T212：执行一次「清屏」（屏上键与 `ui-clear` CLI 共用同一段）。
+ *
+ * 只清视觉：波形缓冲 + R 峰队列 + BPM；**不改播放状态、不归零回放位置**。
+ *
+ * 🛑 调用方必须持有 LVGL 锁（内部会动 lv 标签）：
+ *   - 屏上按钮回调在 LVGL 任务里，已持锁 ⇒ 直接调；
+ *   - `ui-clear` CLI 在 console 任务里 ⇒ 先 `esp_lv_adapter_lock(-1)`。
+ *
+ * 单独暴露出来是为了让自动化验收能自己触发清屏（`485tools/_t211_clear_probe.py
+ * --trigger cli`），不必靠人点屏。⚠ 它只覆盖动作本身，**不覆盖 LVGL 事件分发**
+ * （`on_btn_click` 那条路径）—— 那条只能靠人手点一次确认。
+ */
+void ui_clear_apply(void);
+
 /** @brief 切换配色（S8 用；S6 只切浅色/深色两套） */
 void ui_button_bar_set_theme(const ui_theme_t *theme);

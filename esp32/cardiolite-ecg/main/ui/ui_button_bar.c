@@ -120,6 +120,35 @@ static void fmt_1dp(char *buf, size_t n, float v)
 }
 
 /* ============================================================================
+ * ★T212：清屏动作（屏上键 + `ui-clear` CLI 共用）
+ * ==========================================================================*/
+
+/* 清屏 = 只清视觉：波形缓冲 + R 峰队列 + BPM。
+ * 不动播放状态、不动回放位置（需求 §8.4 2026-11-06 订正，方案 B）。
+ *
+ * 🛑 调用方必须持有 LVGL 锁（内部会动 lv 标签）：
+ *   - 屏上按钮回调在 LVGL 任务里 ⇒ 已持锁，直接调；
+ *   - `ui-clear` CLI 在 console 任务里 ⇒ 先 `esp_lv_adapter_lock(-1)`。
+ * 本函数**故意不加锁** —— 加了会与按钮路径二重加锁，是否安全取决于适配层的
+ * 互斥量是否递归，不去赌。
+ *
+ * 抽成独立函数的目的：让自动化验收（`_t211_clear_probe.py --trigger cli`）
+ * 能自己触发清屏，不必靠人点屏。⚠ 它只覆盖动作层，
+ * **不覆盖 LVGL 事件分发**（`on_btn_click` 的 `case BTN_CLEAR`）——
+ * 那条路径只能靠人手点一次确认。 */
+void ui_clear_apply(void)
+{
+    if (!app_action_clear()) {
+        return;         /* 无文件 ⇒ 与屏上灰键一致：什么都不做 */
+    }
+    ui_waveform_clear();
+    ui_waveform_set_frozen(false);
+    ecg_pipeline_rpeak_reset();     /* §8.4：清 R 峰队列 */
+    ui_bpm_reset();                 /* §8.4：BPM 归 `--` */
+    ui_button_bar_refresh();        /* 冻结态被解除 ⇒ 冻结键文字要跟着变回「冻结」 */
+}
+
+/* ============================================================================
  * 按钮动作
  * ========================================================================== */
 
@@ -149,7 +178,7 @@ static void on_btn_click(lv_event_t *e)
         }
         break;
 
-    case BTN_CLEAR: {
+    case BTN_CLEAR:
         /* ★T212（2026-11-06 猛哥拍板方案 B）：**清屏 = 只清视觉，不动播放状态、不动回放位置**。
          *
          * 与 T211 的差别（T211 的补丁已在 T212 里整段撤掉）：
@@ -157,26 +186,17 @@ static void on_btn_click(lv_event_t *e)
          *   而 `app_action_clear()` 当时又把自己的 `play` 强改成 IDLE ⇒
          *   **同一个键两次点击行为相反**：播放态第一次点是「从头重播」，
          *   第二次点却变成「暂停」（因为 play 已被上一次改成 IDLE）。
-         *   现在：位置原地不动，`ui_waveform_clear()` 只清显示缓冲 ⇒ 画面空白后，
+         *   现在：位置原地不动，只清显示缓冲 ⇒ 画面空白后，
          *   **后续样本从左侧接着铺**（不重复、不倒退）。
          *
          * 🛑 不再调用 `ecg_pipeline_restart()`：它会 `fseek(f, 0, SEEK_SET)`
          *   （`ecg_pipeline.c:538`）⇒ 5 分钟数据在 1 分钟处清屏，会把进度拨回 0，
-         *   白白重看 1 分钟。要「从头看」请按「回放」键（`app_state.c:58` 分支自己 restart）。
+         *   白白重看 1 分钟。要「从头看」请按「回放」键（它自己走 restart）。
          *
-         * ⚠ 冻结仍解除：§8.4 未变的部分要求清完从空白开始画，不该还停在冻结。
-         * ⚠ 485 实时源下本键与以前完全一样是「纯视觉」：485 生产者本来就不看
-         *   `s_restart` / `s_paused`。 */
-        if (app_action_clear()) {
-            ui_waveform_clear();
-            ui_waveform_set_frozen(false);
-            /* 需求 §8.4：清波形缓冲 + **清 R 峰队列 + BPM 归 `--`**（位置归零一项已撤销）。
-             * 检测器由生产者重置（epoch+1），本地浮层立刻刷 `--`，不等 200 ms 刷新周期。 */
-            ecg_pipeline_rpeak_reset();
-            ui_bpm_reset();
-        }
+         * 具体动作在 `ui_clear_apply()`（与 `ui-clear` CLI 共用同一段），
+         * 本回调在 LVGL 任务里，已持锁 ⇒ 直接调，不要再加锁。 */
+        ui_clear_apply();
         break;
-    }
 
     case BTN_GAIN: {
         /* 以 ui_waveform 的当前值为准反查档位，避免与 main 里的索引不同步 */
