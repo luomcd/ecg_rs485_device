@@ -1398,6 +1398,125 @@ static int cmd_485_stop(int argc, char **argv)
     return 0;
 }
 
+/* ---- 485-perf [secs]：窗口内实测帧率 / 丢帧 / 帧长（★T214）----
+ *
+ * 为什么需要它：`485-stat` 打的全是**开机以来的累计值**，要算速率得自己
+ * 隔一段时间发两次、把数字相减、再掐表。三个问题：
+ *   ① 分母靠人掐表 ⇒ 每次口径不同，换固件版本后数字无法对比；
+ *   ② 30 min 长稳没法手工抄；
+ *   ③ 手工采样容易把多帧打在同一时间戳上（CH340 的 read(4096) 实测阻塞
+ *      3.49 s）—— 曾据此算出 46 fps 的假值，真值 19.6 fps。
+ *
+ * 本命令把口径钉死：分母一律用 **esp_timer 实测窗口时长**，
+ * 不用命令行给的秒数、也不用采样周期。
+ *
+ * 🛑 判双通道只看 `帧长`：59 B/帧=单通道，109 B/帧=双通道（Δrx/Δframes）。
+ *   屏上画布切了**不代表**下行生效（T209 的教训）。
+ */
+static int cmd_485_perf(int argc, char **argv)
+{
+    uint32_t secs = 10;
+    if (argc >= 2) {
+        char *endp = NULL;
+        const long v = strtol(argv[1], &endp, 10);
+        if (endp == argv[1] || v < 1 || v > 3600) {
+            printf("用法: 485-perf [秒数 1~3600]，默认 10\n");
+            return 1;
+        }
+        secs = (uint32_t)v;
+    }
+
+    if (!ecg_pipeline_src_is_rs485()) {
+        printf("⚠ 当前不是 485 源（FILE 回放），以下统计不会增长。先 485-start。\n");
+    }
+
+    ecg_pipeline_stream_stat_t s0, s1;
+    rs485_stat_t r0, r1;
+    ecg_pipeline_stats_t p0, p1;
+    memset(&s0, 0, sizeof s0); memset(&s1, 0, sizeof s1);
+    memset(&r0, 0, sizeof r0); memset(&r1, 0, sizeof r1);
+    memset(&p0, 0, sizeof p0); memset(&p1, 0, sizeof p1);
+
+    ecg_pipeline_get_stream_stat(&s0);
+    rs485_get_stat(&r0);
+    ecg_pipeline_get_stats(&p0);
+
+    const uint32_t t0 = (uint32_t)(esp_timer_get_time() / 1000);
+    uint32_t ring_peak = p0.ring_level;
+
+    printf("采样 %lu s …（期间别发别的命令，避免扰动）\n", (unsigned long)secs);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        ecg_pipeline_stats_t p;
+        ecg_pipeline_get_stats(&p);
+        if (p.ring_level > ring_peak) {
+            ring_peak = p.ring_level;
+        }
+        if ((uint32_t)(esp_timer_get_time() / 1000) - t0 >= secs * 1000u) {
+            break;
+        }
+    }
+    const uint32_t t1    = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t dt_ms = t1 - t0;
+
+    ecg_pipeline_get_stream_stat(&s1);
+    rs485_get_stat(&r1);
+    ecg_pipeline_get_stats(&p1);
+
+    const uint32_t dframes = s1.frames - s0.frames;
+    const uint32_t dbytes  = r1.rx_bytes - r0.rx_bytes;
+    const uint32_t dpushed = p1.pushed - p0.pushed;
+    const double   dt_s    = (double)dt_ms / 1000.0;
+    const double   fps     = (dt_s > 0.0) ? (double)dframes / dt_s : 0.0;
+    const double   fps_byt = (dt_s > 0.0) ? (double)dbytes / dt_s : 0.0;
+    const double   frame_b = (dframes > 0u) ? (double)dbytes / (double)dframes : 0.0;
+    const double   expect  = (double)APP_SAMPLE_RATE_HZ * dt_s;
+
+    printf("\n==== 485-perf  实测窗口 %lu ms ====\n", (unsigned long)dt_ms);
+    printf("帧      : +%lu 帧  →  %.2f fps        （判据 ≥19 fps）\n",
+           (unsigned long)dframes, fps);
+    printf("字节    : +%lu B   →  %.1f B/s   帧长 %.2f B/帧（59=单通道 / 109=双通道）\n",
+           (unsigned long)dbytes, fps_byt, frame_b);
+    printf("样本    : +%lu  →  %.1f /s   理论 %.0f（%d Hz × %.2f s）\n",
+           (unsigned long)dpushed, (dt_s > 0.0) ? (double)dpushed / dt_s : 0.0,
+           expect, APP_SAMPLE_RATE_HZ, dt_s);
+    printf("错误    : crc_err +%lu  resync +%lu B  bad_len +%lu  seq_gaps +%lu\n",
+           (unsigned long)(s1.crc_errors - s0.crc_errors),
+           (unsigned long)(s1.resync_bytes - s0.resync_bytes),
+           (unsigned long)(s1.bad_len - s0.bad_len),
+           (unsigned long)(s1.seq_gaps - s0.seq_gaps));
+    printf("链路    : parity +%lu  frame_err +%lu  ovf +%lu  chunks +%lu  tx +%lu B\n",
+           (unsigned long)(r1.parity_err - r0.parity_err),
+           (unsigned long)(r1.frame_err - r0.frame_err),
+           (unsigned long)(r1.fifo_ovf - r0.fifo_ovf),
+           (unsigned long)(r1.rx_chunks - r0.rx_chunks),
+           (unsigned long)(r1.tx_bytes - r0.tx_bytes));
+    printf("环缓    : peak %lu/%d   drop +%lu   水位末值 %lu\n",
+           (unsigned long)ring_peak, ECG_RING_CAPACITY,
+           (unsigned long)(p1.dropped - p0.dropped),
+           (unsigned long)p1.ring_level);
+    printf("内存    : int_heap %lu → %lu KB（Δ%+ld）\n",
+           (unsigned long)(p0.heap_int_free / 1024), (unsigned long)(p1.heap_int_free / 1024),
+           (long)((int32_t)(p1.heap_int_free / 1024) - (int32_t)(p0.heap_int_free / 1024)));
+
+    /* ---- 判定：只打结论，不替人拍板 ---- */
+    const bool ok_fps   = (fps >= 19.0);
+    const bool ok_crc   = ((s1.crc_errors - s0.crc_errors) == 0u);
+    const bool ok_ovf   = ((r1.fifo_ovf - r0.fifo_ovf) == 0u);
+    const bool ok_gap   = ((s1.seq_gaps - s0.seq_gaps) <= (dframes / 1000u));
+    const bool ok_drop  = ((p1.dropped - p0.dropped) == 0u);
+
+    printf("\n判定    : 帧率 %s   crc %s   ovf %s   seq_gaps %s   drop %s\n",
+           ok_fps  ? "✓" : "✗", ok_crc ? "✓" : "✗", ok_ovf ? "✓" : "✗",
+           ok_gap  ? "✓" : "✗", ok_drop ? "✓" : "✗");
+    printf("          %s\n", (ok_fps && ok_crc && ok_ovf && ok_gap && ok_drop)
+                             ? "⇒ 本窗口 PASS" : "⇒ 本窗口 FAIL（见上面逐项）");
+    if (dframes > 0u && frame_b > 100.0 && frame_b < 115.0) {
+        printf("          双通道已生效（帧长 %.1f B/帧）\n", frame_b);
+    }
+    return 0;
+}
+
 static int cmd_485_stat(int argc, char **argv)
 {
     (void)argc;
@@ -1824,6 +1943,12 @@ static void register_commands(void)
             .help    = "打印 485 链路/解帧/环缓/心率统计",
             .hint    = NULL,
             .func    = &cmd_485_stat,
+        },
+        {
+            .command = "485-perf",
+            .help    = "窗口内实测帧率/丢帧/帧长/内存（★性能测试统一口径）",
+            .hint    = "[秒数，默认 10]",
+            .func    = &cmd_485_perf,
         },
         {
             .command = "485-send",
