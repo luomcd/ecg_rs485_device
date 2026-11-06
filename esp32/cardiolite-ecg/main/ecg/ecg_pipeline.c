@@ -96,6 +96,7 @@ static volatile bool      s_rp_reset_req = false;
  * ========================================================================== */
 
 static volatile bool      s_rp_dump = false;   /* 是否输出峰序列（CLI mit-run 开） */
+static volatile bool      s_prog_enable = false;  /* ★T219：是否打 PROGRESS（仅回放对账） */
 static volatile int       s_speed   = 1;       /* 回放倍速 1/2/4/8 */
 
 /* 文件内相对号基准 = 当前文件第一个样本的**全局序号**（`s_push_seq` 空间）。
@@ -363,9 +364,17 @@ static void push_sample(int32_t v1, int32_t v2)
             hr_publish();
         }
 
-        /* ---- 串口进度（只在回放对账模式下打）----
-         * 一行几十字节、每 5 万样本一次（1x 下 100 s 一次），不会阻塞 2 ms 节拍。 */
-        if (s_rp_dump) {
+        /* ---- 串口进度（只在**回放对账**时打）----
+         * 一行几十字节、每 5 万样本一次（1x 下 100 s 一次），不会阻塞 2 ms 节拍。
+         *
+         * ★T219：增加 `s_prog_enable` 门。原来只看 `s_rp_dump`，但 `rpeak rec`
+         *   实时记录也会置 `s_rp_dump` ⇒ 485 源下每 100 s 刷两行 PROGRESS，且：
+         *     · `s_dump_name` 是 FILE 生产者设的，485 源下是**上次回放的文件名**
+         *       （实测打出 `ecg.bin`，与当前实时流毫无关系）；
+         *     · `samples=` 用 `s_push_seq − s_file_base_seq`，而 485 源下
+         *       `file_epoch_begin()` 从不调用 ⇒ 这是**开机累计**，不是本次记录量。
+         *   两个字段都会被误读 ⇒ 只有 mit-run / play(dump_result) 才该打。 */
+        if (s_rp_dump && s_prog_enable) {
             const uint32_t rel = s_push_seq - s_file_base_seq;
             if (rel >= s_prog_next) {
                 s_prog_next += PROG_STEP_SAMPLES;
@@ -1050,6 +1059,11 @@ void ecg_pipeline_flush_dump(void)
     dump_buf_flush_to_file();       /* 内部已挡「空缓冲直接 return」 */
     s_dump_fill = 0;                /* 落完清空，避免下一次重复写同一段 */
     ESP_LOGI(TAG, "dump flushed -> %s", s_dump_path);
+}
+
+void ecg_pipeline_set_prog(bool on)
+{
+    s_prog_enable = on;
 }
 
 void ecg_pipeline_set_speed(int speed)

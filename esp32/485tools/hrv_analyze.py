@@ -129,7 +129,7 @@ def analyze(peaks, fs=500.0, true_bpm=180.0):
     out["T_true"] = T_true
     out["span_s"] = (peaks[-1] - peaks[0]) / fs
 
-    # ---- ① 时基：线性拟合斜率 ----
+    # ---- ① 时基：两种估计 ----
     ks = list(range(out["n"]))
     a, b = linfit(ks, [float(p) for p in peaks])
     out["slope"]  = a
@@ -139,8 +139,16 @@ def analyze(peaks, fs=500.0, true_bpm=180.0):
     rr = [y - x for x, y in zip(peaks, peaks[1:])]
     out["rr"] = rr
     out["rr_mean"] = st.mean(rr)
+    out["rr_med"]  = st.median(rr)
     out["rr_sigma"] = st.pstdev(rr)
     out["rmssd"] = math.sqrt(sum((y - x) ** 2 for x, y in zip(rr, rr[1:])) / max(1, len(rr) - 1))
+
+    # ★ 时基的**鲁棒**估计：用 RR 中位数，不用线性拟合斜率。
+    #   原因：多检（RR≈0.65T）与漏检（RR≈1.65T）会系统性拉偏斜率，
+    #   而中位数对少数异常值不敏感。实测 210 bpm：斜率给出 -1.0% 的"时基偏差"，
+    #   但同期有 18 处多检 —— 那 1% 其实是检测异常造成的假象。
+    out["T_med"]    = out["rr_med"]
+    out["fs_eff_med"] = fs * T_true / out["rr_med"] if out["rr_med"] else float("nan")
 
     d2 = [peaks[i + 1] - 2 * peaks[i] + peaks[i - 1] for i in range(1, out["n"] - 1)]
     out["sigma_e_rr"] = out["rr_sigma"] / math.sqrt(2.0)
@@ -153,6 +161,7 @@ def analyze(peaks, fs=500.0, true_bpm=180.0):
     high = [(i, v) for i, v in enumerate(rr) if v > RR_HIGH_RATIO * T_true]
     out["extra"]   = low
     out["missed"]  = high
+    out["anom_rate"] = (len(low) + len(high)) / max(1, len(rr))
     expect = out["span_s"] * true_bpm / 60.0 + 1.0
     out["expect"] = expect
     out["count_delta"] = out["n"] - expect
@@ -175,13 +184,15 @@ def report(r, fs, true_bpm):
 
     # ① 时基
     print("① 时基")
-    print(f"   拟合斜率       : {r['slope']:.3f} 样本/拍（真值 {T:.3f}）"
-          f"，偏差 {r['slope']-T:+.3f}")
+    dev_med = (r["fs_eff_med"] - fs) / fs * 100
+    print(f"   RR 中位数      : {r['T_med']:.0f} 样本 ⇒ 等效 {r['fs_eff_med']:.2f} Hz"
+          f"（{dev_med:+.3f}%）   ★鲁棒估计，以此为准")
     dev = (r["fs_eff"] - fs) / fs * 100
-    print(f"   等效采样率     : {r['fs_eff']:.3f} Hz（名义 {fs:.0f} Hz），"
-          f"{dev:+.3f}%")
-    if abs(dev) > 0.1:
-        print(f"   ⚠ 时基偏差超过 0.1% ⇒ 所有 HRV 时间量整体偏 {dev:+.2f}%")
+    print(f"   拟合斜率       : {r['slope']:.3f} 样本/拍，等效 {r['fs_eff']:.2f} Hz"
+          f"（{dev:+.3f}%）")
+    print("                    ⚠ 斜率会被漏检/多检拉偏，只在③无异常时才可信")
+    if abs(dev_med) > 0.1:
+        print(f"   ⚠ 时基偏差超过 0.1% ⇒ 所有 HRV 时间量整体偏 {dev_med:+.2f}%")
     print()
 
     # ② 抖动
@@ -212,6 +223,12 @@ def report(r, fs, true_bpm):
             print(f"      第 {i+1} 个间期 = {v} 样本（{v/T:.2f}·T）")
     if not r["extra"] and not r["missed"]:
         print("   ✓ 无异常间期")
+    else:
+        print(f"   异常率         : {r['anom_rate']*100:.2f}%"
+              f"（{len(r['extra'])+len(r['missed'])}/{len(r['rr'])}）")
+        if r["anom_rate"] > 0.03:
+            print("   ⚠ 异常率 >3% ⇒ 下面的 σ(e) 与斜率都被污染，"
+                  "先修检测器再谈 HRV")
     print()
 
     # 判定

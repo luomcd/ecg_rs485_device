@@ -172,6 +172,18 @@ void ecg_pipeline_set_rpeak_dump(bool on);
  *   但 4x/8x 会让环缓填充变快、UI 消费跟不上 ⇒ 可能丢样本。丢样本时回放少喂检测器，
  *   峰序列就不再与批处理逐位一致。所以 `FILE` 行带 `dropped=`，**对账要求 dropped=0**。
  */
+/**
+ * @brief ★T219：开关串口 `PROGRESS` 进度打印（**只给回放对账用**）。
+ *
+ * 为什么需要：`PROGRESS` 的两个字段在 485 实时源下都是假的 ——
+ *   · `s_dump_name` 由 FILE 生产者设置，实时源下是**上次回放的文件名**；
+ *   · `samples=` 是 `s_push_seq − s_file_base_seq`，而 485 源下
+ *     `file_epoch_begin()` 从不调用 ⇒ 是**开机累计**，不是本次记录量。
+ * 而 `rpeak rec` 实时记录同样会置 `s_rp_dump` ⇒ 不加这道门就会每 100 s
+ * 刷两行误导性输出。默认关；`mit-run` / `play --dump` 那条路显式打开。
+ */
+void ecg_pipeline_set_prog(bool on);
+
 void ecg_pipeline_set_speed(int speed);
 
 /**

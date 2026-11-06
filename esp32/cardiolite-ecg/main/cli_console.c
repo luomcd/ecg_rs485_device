@@ -925,6 +925,10 @@ static int start_replay(const char *fname, int speed, float gain, test_mode_t mo
         ecg_pipeline_set_dump_file(NULL);           /* 清掉上一次的路径 */
         ecg_pipeline_set_rpeak_dump(false);
     }
+    /* ★T219：`PROGRESS` 只在**回放对账**（dump_result）时才有意义。
+     * 485 实时源下 `s_dump_name` 是上次回放的文件名、`samples` 是开机累计，
+     * 两个字段都会误导 ⇒ 这里按本次调用的语义显式设门。 */
+    ecg_pipeline_set_prog(dump_result);
 
     /* 4) 启动 / 换文件。set_file 内部会把 s_paused 清掉从而自动恢复播放。 */
     if (running) {
@@ -1281,11 +1285,26 @@ static void rpeak_rec_worker(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    const bool cancelled = s_rec_cancel;
+
     ecg_pipeline_set_rpeak_dump(false);
     ecg_pipeline_flush_dump();          /* 实时源没有 EOF ⇒ 必须主动落盘 */
     s_rec_running = false;
     s_rec_end_ms  = 0;
-    ESP_LOGI(TAG, "rpeak rec done (%u s) -> " RPEAK_REC_PATH, (unsigned)RPEAK_REC_SECS);
+
+    /* ★T219：**必须在控制台打一行**。默认全局日志被压到 ERROR
+     * （`main.c`：esp_log_level_set("*", ESP_LOG_ERROR)），只靠 ESP_LOGI
+     * 的话「记完了」这件事用户根本看不见 —— 实测就有人问"到点没提示吗"。 */
+    if (cancelled) {
+        printf("\n[rpeak rec] 已提前停止，落盘完成 -> %s\n", RPEAK_REC_PATH);
+    } else {
+        printf("\n[rpeak rec] ★ %u s 到点，已自动落盘 -> %s\n",
+               (unsigned)RPEAK_REC_SECS, RPEAK_REC_PATH);
+    }
+    printf("            取回：result-dump rpeak_hrv.txt   分析：py hrv_analyze.py rpeak_hrv.txt\n");
+
+    ESP_LOGI(TAG, "rpeak rec done (%u s, cancelled=%d) -> " RPEAK_REC_PATH,
+             (unsigned)RPEAK_REC_SECS, (int)cancelled);
     vTaskDelete(NULL);
 }
 
@@ -1341,6 +1360,8 @@ static int cmd_rpeak(int argc, char **argv)
 
         ecg_pipeline_set_dump_file(RPEAK_REC_PATH);
         ecg_pipeline_set_rpeak_dump(true);
+        /* ★T219：实时记录不打 PROGRESS（字段含义在 485 源下全是假的，见 ecg_pipeline.h） */
+        ecg_pipeline_set_prog(false);
 
         s_rec_cancel  = false;
         s_rec_running = true;
