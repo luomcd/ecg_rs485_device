@@ -8,10 +8,14 @@
  * 不再分主行/副行 —— 85 px 宽放两行反而挤，单行更清楚。文案形如
  *   开始 / 冻结 / 清屏 / 5mm/mV / 25mm/s / 诊断 / 陷波ON / 通道I / 回放
  *
- * 灰显规则（需求 §8.2 / §8.5）：
- *   - 采集：**恒灰**（第一阶段无实时数据源）
+ * 灰显规则（需求 §8.2 / §8.5；★T209 2026-11-05 修订）：
+ *   - **采集：恒灰、永不响应点击**。采集启停全部走 CLI（`485-send start|stop`）——
+ *     本设计没有 STOP 键（T206 拍板⑤），屏上按钮一旦写成「采集中」就再也变不回来，
+ *     只能复位 STM32，屏上状态与真值长期打架。详见 `s_btn` 上方注释。
  *   - 模式 / 陷波 / 通道：**灰显**（三参数属采集端命令 0x04/0x05/0x06，回放无采集端可改），
- *     但**文字仍显示实际状态**（从 STA 解出），不是"未知" —— 让人看清当前数据是什么档采集的
+ *     但**文字显示实际状态**（从 STA 解出）——
+ *     ⚠ ★T209 起 STA 才是真值：`ecg_pipeline.c` 每帧上抛 `app_state_set_sta()`。
+ *     T209 之前该函数**零调用** ⇒ 这里显示的是硬编码兜底值 0x02（假值）。
  *   - 回放/记录：SD 无文件时灰
  *   - 冻结 / 清屏 / 增益 / 走纸：有文件即可点
  */
@@ -49,6 +53,18 @@ typedef struct {
 static btn_t            s_btn[BTN_COUNT];
 static lv_obj_t        *s_bar;
 static const ui_theme_t *s_theme;
+
+/* ★T209（11-05）：「开始」按钮**永久置灰、不承担任何功能**。
+ *
+ * 为什么删掉它（回溯 T208 → T209）：
+ *   T208 让它点一下发 `0x01 START` 并置灰显示「采集中」。实测下来这条路走不通 ——
+ *   **本设计没有 STOP 键**（T206 拍板⑤：START 后一直跑），所以要停只能复位 STM32；
+ *   而一旦屏上文字变成「采集中」，复位后 STM32 已停、按钮文字**永远变不回去**
+ *   （`s_capture_started` 只在源切换时才复位）⇒ 屏上显示与真实状态长期打架。
+ *   ⇒ 采集的启停**全部走 CLI**（`485-send start` / `485-send stop`），
+ *     按钮保留只为布局不变、且明确告诉人"这里不是操作入口"。
+ * ⚠ 随之删除的还有 `s_capture_started` 变量与 `ecg_cmd_start()` 调用 ——
+ *   本文件**不再发任何下行命令**，「诊断/陷波/通道」三个键同样只显示 STA、不可点。 */
 
 /* 增益 / 走纸的档位（与 ui_waveform 的当前值保持同步） */
 static const float k_gain_v[]  = { APP_GAIN_2_5, APP_GAIN_5, APP_GAIN_10, APP_GAIN_20 };
@@ -121,13 +137,37 @@ static void on_btn_click(lv_event_t *e)
     ESP_LOGI(TAG, "click btn %d", (int)id);
 
     switch (id) {
+    case BTN_CAPTURE:
+        /* ★T209：**本键恒灰、永不可点**（见文件头 `s_btn` 上方注释）。
+         * 保留这个 case 只为占位：万一将来又放开可点，事件路由不会掉进 default
+         * 而静默什么都不做。采集启停改走 CLI：`485-send start` / `485-send stop`。 */
+        break;
+
     case BTN_FREEZE:
         if (app_action_freeze()) {
             ui_waveform_set_frozen(st->frozen);
         }
         break;
 
-    case BTN_CLEAR:
+    case BTN_CLEAR: {
+        /* ★T211（11-05）：**清屏不改变播放状态**。
+         *
+         * 🛑 症状：暂停态点「清屏」⇒ 波形自己跑出来。
+         *   根因是 `ecg_pipeline_restart()` 里有 `s_paused = false`
+         *   （"重播隐含恢复"，`ecg_pipeline.c:930`），再配合 FILE 生产者看到
+         *   `s_restart` 就 `fseek(f, 0, SEEK_SET)`（`:534-547`）⇒
+         *   **一次清屏 = 清画布 + 解除暂停 + 从头重播**。
+         *
+         * 🛑 不能改 `restart()` 本身：下面 `BTN_REPLAY` 的 `APP_PLAY_ENDED` /
+         *   `APP_PLAY_IDLE` 两个分支**正是靠它的"隐含恢复"来起播**的。
+         * ⇒ 只能在这里补：先记原播放态，清完按需再 pause 一次。
+         *
+         * ⚠ `app_action_clear()` 会把 `play` 置成 `APP_PLAY_IDLE`（`app_state.c:53`），
+         *   所以 `prev_play` **必须在它之前取**。
+         * ⚠ 485 源下 `s_paused` 无人消费（485 生产者不看它，`ecg_pipeline.c:527`
+         *   只在 FILE 分支），所以这两步在实时源下是空操作，不会误停采集。 */
+        const app_play_t prev_play = st->play;
+
         if (app_action_clear()) {
             ui_waveform_clear();
             ui_waveform_set_frozen(false);
@@ -137,8 +177,14 @@ static void on_btn_click(lv_event_t *e)
             ecg_pipeline_rpeak_reset();
             ui_bpm_reset();
             ecg_pipeline_restart();     /* 回放位置归零（需求 §8.4） */
+
+            /* 原来没在播（暂停 / 播完 / idle）⇒ 清完保持不播 */
+            if (prev_play != APP_PLAYING) {
+                ecg_pipeline_pause();
+            }
         }
         break;
+    }
 
     case BTN_GAIN: {
         /* 以 ui_waveform 的当前值为准反查档位，避免与 main 里的索引不同步 */
@@ -170,7 +216,14 @@ static void on_btn_click(lv_event_t *e)
     }
 
     case BTN_CHANNEL: {
-        /* 切「通道 I / II」= 切换到对应帧型的数据文件。
+        /* ★T209：485 源下本键已置灰（见 `ui_button_bar_refresh`）。这里再挡一道 ——
+         * 通道切换的真值源在 STM32（`0x06`，且仅 STOP 态生效），屏上切画布只会
+         * 造出"CH2 一条零基线"的假象。485 源请用 `485-send ch2 0|1`。 */
+        if (ecg_pipeline_src_is_rs485()) {
+            ESP_LOGW(TAG, "485 源：通道切换请用 485-send ch2 0|1（屏上此键已置灰）");
+            break;
+        }
+        /* SD 回放源：切「通道 I / II」= 切换到对应帧型的数据文件。
          *   通道 I  → 单通道文件（LEN=53）
          *   通道 II → 双通道文件（LEN=103）
          * 文件由 storage_sd 在启动时扫目录按首帧 LEN 分类得到。
@@ -367,7 +420,14 @@ void ui_button_bar_refresh(void)
     const app_state_t *st = app_state_ro();
     char buf[48];       /* 够放下 "<最多31字符数字>mm/mV"；用 28 会触发 -Wformat-truncation */
 
-    /* 1. 采集：恒灰。第一阶段无实时数据源，只显示「开始」 */
+    /* 1. 采集（★T209）：**恒灰，文字恒为「开始」**。
+     *
+     * 🛑 为什么不显示「采集中」：本设计没有 STOP 键（T206 拍板⑤ START 后一直跑），
+     *   要停只能复位 STM32 ⇒ 一旦写上「采集中」就再也变不回来，屏上与真实状态长期
+     *   打架（这正是 T208 方案被撤掉的原因）。
+     * ⇒ 采集真值请用 `485-stat`：`frames` 在涨 = STM32 在出数据（唯一可信判据，
+     *   按钮文字和 `ecg_pipeline_running()` 都判不出来 —— 后者从 `485-start`
+     *   起就恒 true）。 */
     lv_label_set_text(s_btn[BTN_CAPTURE].label, "开始");
     apply_btn_style(&s_btn[BTN_CAPTURE], false, false);
 
@@ -414,14 +474,27 @@ void ui_button_bar_refresh(void)
         lv_label_set_text(s_btn[BTN_NOTCH].label,
                           (sta & ECG_STA_BIT_NOTCH) ? "陷波ON" : "陷波OFF");
 
-        /* 通道按钮反映**当前显示模式**（不是 STA），且**可点** —— 临时放开，
-         * 用于验证 LEN=103 双通道数据的画布 2 显示（需求 §8.5 原为恒灰）。 */
-        lv_label_set_text(s_btn[BTN_CHANNEL].label,
-                          ui_waveform_is_dual_channel() ? "通道II" : "通道I");
+        /* 通道按钮：**文字反映当前画布模式**（不是 STA）。
+         *
+         * 🛑 ★T209（11-05）修正「假使能」：
+         *   T208 期间这个键在 485 源下也可点，但它只调 `ui_waveform_set_dual_channel()`
+         *   **换画布、一个字节都不发给 STM32** ⇒ STM32 照旧发 LEN=53（`n_ch2=0`）
+         *   ⇒ `ecg_pipeline.c:429` 的 `v2 = (k < fr.n_ch2) ? fr.ch2[k] : 0` 把 CH2 整段
+         *   填 0 ⇒ **屏上第二条正好是一条贴零的水平基线**。猛哥 11-05 报的
+         *   「使能通道II 后只有一条基线」就是这个，不是 STM32 没数据。
+         *   （STM32 侧 CH2 ≡ CH1，`ads1293.c:1533` 直接复制 ⇒ 真发了必然两路一样。）
+         * ⇒ 485 源下本键**置灰**：通道切换必须由 STM32 决定，且 `0x06` **仅 STOP 态**
+         *   生效，做成可点就只能在 STOP 态点，反而更容易误判。改走
+         *   `485-send ch2 0|1`（那条会在回执后把画布一起切）。
+         * ⇒ SD 回放源仍可点：那里它本义是"切到 LEN=103 的数据文件"，与采集端无关。 */
+        const bool dual = ui_waveform_is_dual_channel();
+        const bool ch_clickable = st->file_ok && !ecg_pipeline_src_is_rs485();
+
+        lv_label_set_text(s_btn[BTN_CHANNEL].label, dual ? "通道II" : "通道I");
 
         apply_btn_style(&s_btn[BTN_MODE],  false, false);
         apply_btn_style(&s_btn[BTN_NOTCH], false, false);
-        apply_btn_style(&s_btn[BTN_CHANNEL], ui_waveform_is_dual_channel(), st->file_ok);
+        apply_btn_style(&s_btn[BTN_CHANNEL], dual, ch_clickable);
     }
 
     /* 9. 回放四态：单行只显示动词（需求 §8.1） */

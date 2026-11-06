@@ -228,6 +228,19 @@ uint8_t ads1293_wt_fail_want(void);
 uint8_t ads1293_wt_fail_got(void);
 int ads1293_reset_afe(void);
 
+/* ★T207(2026-11-04)：**上电写默认表**（由 `demo_ads1293()` 调一次，唯一调用点）。
+ *   动机：ADS1293 不吃 MCU 的 NRST（`main.h` 无 RESET 脚）⇒ 只有整板断电才回 POR
+ *   ⇒ 旧固件上电寄存器恒≠金标 ⇒ 上位机 H 组硬闸恒 false ⇒「必须先同步才能 START」。
+ *   行为：停流/STANDBY → 写全表 36 条 + 逐条回读 → **停在 STOP**；
+ *         🛑 **不发 0x03 快照**（上电阶段无命令来源，多一帧＝未登记 ACK）。
+ *   返回：0 = 全一致；>0 = 首个不一致项下标+1（详情 `ads1293_wt_fail_*()`）。
+ *   ⚠ 与 `ads1293_start()` **互不依赖** —— START 仍自带写全表。 */
+#ifndef ECG_BOOT_AFE_INIT
+/* ★T207 开关：1 = 上电写默认表（默认）；0 = 回到旧行为（阴性对照用，只需改这一行）。 */
+#define ECG_BOOT_AFE_INIT 1
+#endif
+int ads1293_boot_init(void);
+
 
 /* ---- SET_REGS（协议 v2.2 §5.1 下行 0x11；★G10 2026-09-23 落码）--------------------
  * ads1293_set_regs() : 按 `(REG,VAL)×N` **逐条写 + 逐条回读校验**（复用 G5 写表内核纪律）。

@@ -776,6 +776,49 @@ int ads1293_reset_afe(void)
     return bad;
 }
 
+/* ---- T207(2026-11-04)：上电把默认表写进 AFE（"上电从未配置"陷阱的正面修法）-------
+ * 触发：`demo_ads1293()`（`Core/Src/demo.c`）在 `ads1293_raw_queueinit()` 之后调一次。
+ *
+ * 🛑 为什么必须有它：ADS1293 **不吃 MCU 的 NRST** —— `Core/Inc/main.h:60-67` 里只有
+ *    `ADS_CLK/MISO/MOSI/CS` 四个脚，全库检索 `ADS_RESET`/`RST_Pin` 零命中
+ *    ⇒ **只有整板断电**才让芯片回到 POR 默认值。旧固件上电从不写表 ⇒ 快照里
+ *    H 组（`0x01 0x02 0x27 0x2F` ＋ `0x11 0x12 0x13 0x21~0x24`）永远是 POR 值 ≠ 金标
+ *    ⇒ 上位机 `ConfigValidator.CanStart`（`ConfigValidator.cs:53`）= false
+ *    ⇒ `Form1.cs:1050` 直接弹「禁止 Start」、**一条下行都不发** ⇒ 现场表现就是
+ *    「上电后必须先勾实验写点同步，才能正常 START」。本函数在上电时把这个缺口补掉。
+ *
+ * 🛑 四条纪律（与 `ads1293_start()` / `ads1293_reset_afe()` 同口径）：
+ *    ① 全程走 `ads1293_conversion_run(false)`（无 delay / 无回显），🛑 **不许用**
+ *       `ads1293_conversion()`（内含 `HAL_Delay(5)` 的 printf_msg）；
+ *    ② 🛑 **不发 0x03 快照** —— 上电阶段上位机还没发任何命令，多一帧就是
+ *       「未登记的 ACK」（与 `ads1293_reset_afe()` 第⑤步的唯一区别，故意不去共用）；
+ *    ③ **停在 STOP（`CONFIG=0x02`）**，不替用户 START：起流仍是 `0x01` 的独占职责；
+ *    ④ 表首项 `regs_leaderIII[0]` 是 `{0x00,0x00}` = STANDBY ⇒ 写完**必须显式补 0x02**，
+ *       否则芯片停在 STANDBY（"不在跑"照成立，但下次 START 的口径对不上）。
+ *
+ * ⚠ 与 `0x01 START` 的关系：**互不依赖**。`ads1293_start()` 第③步照样写全表 36 条
+ *    （P1 依据：宁可重复写，不依赖上电那一次是否成功）⇒ 本函数失败也不会让 START 坏掉，
+ *    只是快照/校验环节仍然不一致。
+ * 返回：0 = 全表回读一致；>0 = 首个不一致项下标+1（细节读 `ads1293_wt_fail_*()`）。 */
+int ads1293_boot_init(void)
+{
+    int bad;
+
+    ads1293_conversion_run(false);      /* ① 停流 + CONFIG=0x02（STANDBY，解锁受保护寄存器） */
+    bad = ads1293_write_table(regs_leaderIII, ARRAY_SIZE(regs_leaderIII));  /* ② 写全表 + 逐条回读 */
+    (void)ads1293_write_reg(TI_ADS1293_CONFIG_REG, 0x02);                   /* ③ 停回 STOP */
+
+    /* ④ 首轮失败 ⇒ 隔 10 ms 整表重来一次。理由：上电瞬间 AFE 的电源/时钟可能还没
+     *    稳定（本板 LDO 起振 + 芯片内部 POR 释放时序），属于"再给一次机会"，
+     *    **不是掩盖问题** —— 最终成败仍由返回值与 `_wt_fail_*` 留痕如实上报。 */
+    if (bad != 0) {
+        HAL_Delay(10);
+        bad = ads1293_write_table(regs_leaderIII, ARRAY_SIZE(regs_leaderIII));
+        (void)ads1293_write_reg(TI_ADS1293_CONFIG_REG, 0x02);
+    }
+    return bad;
+}
+
 /* ---- G6(2026-09-23)：START（协议 §5.1 下行 0x01）--------------------------------
  * 触发：上位机 Start 按钮 / 串口发 `AA 55 80 01 00 01 5D`（7 B）。
  * 🛑 四条纪律：

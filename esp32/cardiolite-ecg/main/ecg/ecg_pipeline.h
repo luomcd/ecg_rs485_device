@@ -212,6 +212,7 @@ typedef struct {
     uint32_t resync_bytes;  /* 为找同步字丢弃的字节数（含上电 ROM 垃圾） */
     uint32_t bad_len;       /* 假帧头（LEN 离谱）丢弃次数 */
     uint32_t seq_gaps;      /* SEQ 非 +1 次数（丢帧指示） */
+    uint32_t snapshots;     /* ★T208：收到的快照帧（TYPE=0x03）数；>0 即证明下行通 */
 } ecg_pipeline_stream_stat_t;
 
 /**

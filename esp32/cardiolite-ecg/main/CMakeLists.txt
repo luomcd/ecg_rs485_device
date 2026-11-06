@@ -12,6 +12,7 @@ idf_component_register(
         "ecg/ecg_pipeline.c"
         "ecg/ecg_rpeak.c"
         "ecg/ecg_batch.c"
+        "ecg/ecg_cmd.c"
         "ecg/rp_selftest_data.c"
         "ui/ui_theme.c"
         "ui/ui_waveform.c"

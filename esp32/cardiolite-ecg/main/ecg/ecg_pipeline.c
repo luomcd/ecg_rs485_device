@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 
 #include "app_config.h"
+#include "app_state.h"      /* ★T209：把每帧 STA 上抛给 UI/CLI（此前零调用 ⇒ 假值） */
 #include "ecg_frame.h"
 #include "ecg_rpeak.h"
 #include "ecg_stream.h"
@@ -35,6 +36,10 @@ typedef enum {
 
 static volatile ecg_src_t s_src = ECG_SRC_NONE;
 static ecg_stream_t      s_stream;      /* 485 字节流状态机（生产者任务私有） */
+
+/* ★T208（11-05）：快照帧计数。生产者写、CLI 读，32 位对齐读写在 Xtensa 上是原子的，
+ * 与既有 s_frames 同口径，不再加锁。 */
+static volatile uint32_t s_snapshots = 0u;
 
 /* ---- 40 KB 环缓放静态区（内部 RAM）。
  * 不放 PSRAM：PSRAM 有 cache miss 抖动，生产者按 2 ms 硬节拍写，
@@ -408,7 +413,27 @@ static void rs485_producer_loop(void)
                 if (!fr.crc_ok) {
                     continue;                       /* CRC 错帧丢弃（已计入 crc_errors） */
                 }
+                /* ★T208（11-05）：按 TYPE 分流。
+                 * 🛑 此前没有这道过滤 ⇒ 80 B 快照帧（TYPE=0x03, LEN=74）被当显示帧
+                 *   解成 36 个"样本"推进环缓，屏上多出 36 个垃圾点，
+                 *   且 `frames` 被虚增（T206 §9.1b）。
+                 *   现在：快照帧只计数，进波形的必须且只能是 TYPE=0x01。 */
+                if (fr.type == ECG_TYPE_SNAPSHOT) {
+                    s_snapshots++;
+                    continue;
+                }
+                if (fr.type != ECG_TYPE_DISPLAY) {
+                    continue;                       /* 未知类型：不污染波形、不计数 */
+                }
                 s_frames++;
+                /* ★T209（11-05）：喂 STA 给 UI/CLI。
+                 * 🛑 此前 `app_state_set_sta()` 全工程**零调用者** ⇒
+                 *   `ui_button_bar.c:458` 的 `st->has_sta` 恒 false，「诊断/陷波」
+                 *   两个按钮上显示的是硬编码兜底值 0x02，**不是真值**；
+                 *   `485-send mode/notch` 也因此没有任何可验收的迹象。
+                 * 写侧＝生产者任务（Core 1）、读侧＝UI/CLI（Core 0），
+                 *   单字节 8 位存储天然原子，与相邻 `s_frames` 同口径不加锁。 */
+                app_state_set_sta(fr.sta, fr.has_sta);
                 for (uint16_t k = 0; k < fr.n_ch1; k++) {
                     const int32_t v2 = (k < fr.n_ch2) ? fr.ch2[k] : 0;
                     push_sample(fr.ch1[k], v2);
@@ -498,14 +523,13 @@ static void producer_task(void *arg)
                      (unsigned)s_rp_epoch);
         }
 
-        /* ---- 暂停：保持任务存活，重置节拍基准避免恢复时"追赶" ---- */
-        if (s_paused) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            last = xTaskGetTickCount();
-            continue;
-        }
-
-        /* ---- 重播请求 ---- */
+        /* ---- 重播请求（★T211：**必须排在暂停判断之前**）----
+         * 两者语义正交：restart = 回放位置归零，paused = 要不要继续推进。
+         * 🛑 放在 `s_paused` 之后会有一个**静默失效**：
+         *   清屏的语义是「位置归零 + 保持暂停」⇒ 若暂停分支先 `continue`，
+         *   `s_restart` 永远不被消费 ⇒ "归零"没执行，下次恢复播放仍从**中断处**
+         *   继续，而屏上已经清成空白 ⇒ 状态对不上。
+         * ⚠ 正常播放（`s_paused == false`）时两种顺序完全等价，MIT 回放行为不变。 */
         if (s_restart) {
             s_restart  = false;
             s_eof      = false;
@@ -518,6 +542,13 @@ static void producer_task(void *arg)
             file_epoch_begin();         /* S3：相对号基准跟着刷新 */
             ESP_LOGI(TAG, "restart from beginning (rpeak epoch=%u)",
                      (unsigned)s_rp_epoch);
+            continue;
+        }
+
+        /* ---- 暂停：保持任务存活，重置节拍基准避免恢复时"追赶" ---- */
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            last = xTaskGetTickCount();
             continue;
         }
 
@@ -835,6 +866,7 @@ void ecg_pipeline_get_stream_stat(ecg_pipeline_stream_stat_t *out)
     out->resync_bytes = s_stream.resync_bytes;
     out->bad_len      = s_stream.bad_len;
     out->seq_gaps     = s_stream.seq_gaps;
+    out->snapshots    = s_snapshots;
 }
 
 bool ecg_pipeline_src_is_rs485(void)

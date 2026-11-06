@@ -105,6 +105,33 @@ void demo_ads1293(void)
     HAL_GPIO_WritePin(ADS_CS_GPIO_Port, ADS_CS_Pin, GPIO_PIN_SET);
     
     ads1293_raw_queueinit();
+
+    /* ★T207(2026-11-04)：上电就把默认表 36 条写进 AFE，让寄存器从一上电就是**已知态**。
+     *   🛑 没有这一步时：ADS1293 停在 POR 默认值（它不吃 MCU 的 NRST ⇒ 只有整板断电才回 POR）
+     *      ⇒ 上位机 `ConfigValidator.CanStart`（H 组 11 条全一致）恒 false
+     *      ⇒ `Form1.cs:1050` 直接弹「禁止 Start」、一条下行都不发
+     *      ⇒ 现场表现就是「上电后必须先勾实验写点同步，才能正常 START」。
+     *   ⚠ 这一步**只此一处**：命令路径 `0x01`/`0x03` 各自仍内建写表，互不依赖。
+     *   ⚠ 返回 0 = 全表回读一致；非 0 = 首个坏项下标+1（诊断见 `ads1293_wt_fail_*()`）。
+     *     上电无帧流 ⇒ 这里打一行回显不丢任何样本。 */
+    {
+#if ECG_BOOT_AFE_INIT                       /* ★T207 开关，0 = 阴性对照（旧行为） */
+        int afe_boot = ads1293_boot_init();
+        /* ★T207b（11-04 实测）：上电阶段 `comm_send()` 是**异步 + 忙判丢弃**
+         *   （`comm_port.c:196` `s_tx_busy != 0` ⇒ `comm_tx_drops++` 后直接 return）。
+         *   `comm_init()` 末尾那条 42 B 横幅在 115200 下要发 **≈3.65 ms**，
+         *   而本函数紧跟着就在这 3.65 ms 内打印 ⇒ **整行被静默丢掉**。
+         *   实测现象：复位后只能看到 `[uart5] ready ...`，看不到 `afe boot init:0`。
+         *   ⇒ 打印前先等 TX 空闲（上电阶段无帧流，忙等上限 20 ms 零代价）。 */
+        {
+            uint32_t wait_start = HAL_GetTick();
+            while (comm_tx_busy() && (HAL_GetTick() - wait_start) < 20u) {
+                /* 等横幅发完；超时也照打（宁可丢这行，不可卡住启动）*/
+            }
+        }
+        printf_msg("afe boot init:%d\r\n", afe_boot);
+#endif
+    }
     
     while(1)
     {

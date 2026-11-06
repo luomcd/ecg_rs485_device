@@ -46,6 +46,16 @@
 /* 帧的固定开销（不含 PAYLOAD）：帧头 5 + CRC8 1 = 6 ⇒ 帧总长 = LEN + 6 */
 #define ECG_FRAME_OVERHEAD  6
 
+/* ---- 上行帧 TYPE（★T208 补：此前只有显示帧，快照帧一律被当显示帧解）----
+ *   0x01 显示帧：SEQ(2)+STA(1)+N×int16，LEN=53 单通道 / 103 双通道
+ *   0x03 快照帧：REQID(1)+COUNT(1)+(REG,VAL)×36，LEN=74，总长 80
+ * 🛑 两者 LEN 都是偶数/奇数混排，**不能只靠 LEN 区分**，必须看 TYPE 字节。
+ *    之前 `ecg_pipeline.c` 没有 TYPE 过滤 ⇒ 80 B 快照帧被解成 36 个"样本"
+ *    （T206 §9.1b，11-05 落 TYPE 过滤时一并修掉）。 */
+#define ECG_TYPE_DISPLAY    0x01u
+#define ECG_TYPE_SNAPSHOT   0x03u
+#define ECG_LEN_SNAPSHOT    74      /* 快照帧 LEN，总长 80 */
+
 #define ECG_LEN_V11         52      /* ⚠ **旧帧**（v1.1 早期固件），无 STA，总长 58。
                                      * 2026-10-23 拍板：**摒弃，不参与验收**。
                                      * 解析器保留识别能力（万一读到老数据不崩），

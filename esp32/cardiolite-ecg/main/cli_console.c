@@ -2,7 +2,7 @@
  * @file cli_console.c
  * @brief CLI 测试模式命令台实现
  *
- * 命令集（共 17 条，按阶段分组）：
+ * 命令集（共 22 条，按阶段分组）：
  *
  *   S1 骨架/状态
  *     status        打印当前模式与 UI 按钮状态
@@ -20,6 +20,8 @@
  *   S3 回放对账
  *     mit-run <rec> [gain] [--speed N]      单条回放（有波形，峰序列落盘 SD）
  *     ladder-run <bpm> [gain] [--speed N]   单档阶梯回放
+ *     play <file> [gain] [--speed N]        ★T210 通用回放：文件名原样，
+ *                                           不写结果文件、不进测试模式（纯看波形）
  *     run-stop                              停止回放并收尾落盘
  *     result-dump <stem>                    按需回传结果文件到串口
  *
@@ -34,6 +36,9 @@
  *     485-start [baud]  启动 485 源（停掉当前 SD 回放；默认 115200）
  *     485-stop          停止 485 源，回到上电默认（SD 回放暂停态）
  *     485-stat          链路/解帧/环缓/心率统计（对账用）
+ *     485-send start|stop|snap|mode|notch|ch2
+ *                    ★T208/T209：本工程唯一的二进制下行入口
+ *                    （0x01/0x02/0x10/0x04/0x05/0x06）
  */
 
 #include "cli_console.h"
@@ -59,7 +64,10 @@
 
 #include "app_config.h"
 #include "test_mode.h"
+#include "app_state.h"          /* ★T209：STA 回读（验证 0x04/0x05 是否生效） */
 #include "storage/storage_sd.h"
+#include "ecg/ecg_cmd.h"
+#include "ecg/ecg_frame.h"      /* ★T209：ecg_sta_to_str() */
 #include "ecg/ecg_pipeline.h"
 #include "rs485_port.h"
 #include "ui/ui_waveform.h"
@@ -823,14 +831,21 @@ static const char *gain_usage(void)
 }
 
 /**
- * 启动一次回放对账。
- * @param fname SD 根目录下的文件名（`mit_105_500.bin` / `sr_060bpm.bin`）
+ * 启动一次回放。
+ * @param fname SD 根目录下的文件名（`mit_105_500.bin` / `sr_060bpm.bin` / `alt-120bpm.bin`）
  * @param speed 倍速 1/2/4/8
  * @param gain  增益 mm/mV；<=0 表示不改（沿用 UI 当前档位）
  * @param mode  进入哪个测试模式（禁用 UI 按钮，防与回放打架）
+ * @param dump_result ★T210：是否落盘峰序列 + 写结果文件。
+ *        `mit-run`/`ladder-run` 传 **true**（对账要用，行为与 T209 之前逐字一致）；
+ *        `play` 传 **false**（纯看波形：不写 SD、不占 SD 写带宽、不进测试模式）。
  * @return 0 = 已开始回放
+ *
+ * 🛑 加这个参数是**纯签名扩展**：两个既有调用点都传 true，分支内代码一行未改，
+ *   所以 MIT/阶梯两条路径的落盘内容、顺序、时机全部不变（T210 验收要求）。
  */
-static int start_replay(const char *fname, int speed, float gain, test_mode_t mode)
+static int start_replay(const char *fname, int speed, float gain, test_mode_t mode,
+                        bool dump_result)
 {
     if (!storage_sd_is_mounted()) {
         printf("SD 卡未挂载，无法回放。\n");
@@ -866,14 +881,27 @@ static int start_replay(const char *fname, int speed, float gain, test_mode_t mo
     ecg_pipeline_pause();
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* 2) 序列头（与批处理同格式，ecg_batch_eval.py 直接可吃） */
-    printf("BATCH-BEGIN total=1\n");
-    printf("# CardioLite S3 replay: fs=%d Hz, file=%s, speed=%dx, "
-           "峰号=文件内相对样本号\n", APP_SAMPLE_RATE_HZ, fname, speed);
+    /* 2) 序列头（与批处理同格式，ecg_batch_eval.py 直接可吃）
+     * ★T210：只在 `dump_result` 时打。纯回放（play）不打 —— `BATCH-BEGIN` 是
+     *   给批处理/对账脚本认的序列头，纯看波形时打出来会把下游解析器骗进来。 */
+    if (dump_result) {
+        printf("BATCH-BEGIN total=1\n");
+        printf("# CardioLite S3 replay: fs=%d Hz, file=%s, speed=%dx, "
+               "峰号=文件内相对样本号\n", APP_SAMPLE_RATE_HZ, fname, speed);
+    }
 
-    /* 3) 开 dump + 设倍速 + 定落盘文件。必须在样本开始喂之前生效。 */
+    /* 3) 开 dump + 设倍速 + 定落盘文件。必须在样本开始喂之前生效。
+     *
+     * ★T210：整块由 `dump_result` 控制。play=false 时必须**显式关**，
+     *   不能"什么都不做" —— dump 开关是跨调用残留的静态状态，上一次
+     *   `mit-run` 打开过它就还是开的，纯回放会莫名其妙往 SD 写一份峰序列。 */
     char result_path[96];
-    {
+    result_path[0] = '\0';
+
+    /* 顺序与 T209 之前完全一致：先 speed、再 dump。别调换。 */
+    ecg_pipeline_set_speed(speed);
+
+    if (dump_result) {
         /* 结果文件名由数据文件名派生：
          *   mit_105_500.bin -> mit_105_result.txt
          *   sr_060bpm.bin   -> sr_060bpm_result.txt
@@ -889,11 +917,13 @@ static int start_replay(const char *fname, int speed, float gain, test_mode_t mo
             stem[sl - 4] = '\0';
         }
         snprintf(result_path, sizeof(result_path), "/sdcard/%s_result.txt", stem);
-    }
 
-    ecg_pipeline_set_speed(speed);
-    ecg_pipeline_set_dump_file(result_path);   /* 峰序列同时落盘一份 */
-    ecg_pipeline_set_rpeak_dump(true);
+        ecg_pipeline_set_dump_file(result_path);   /* 峰序列同时落盘一份 */
+        ecg_pipeline_set_rpeak_dump(true);
+    } else {
+        ecg_pipeline_set_dump_file(NULL);           /* 清掉上一次的路径 */
+        ecg_pipeline_set_rpeak_dump(false);
+    }
 
     /* 4) 启动 / 换文件。set_file 内部会把 s_paused 清掉从而自动恢复播放。 */
     if (running) {
@@ -918,9 +948,15 @@ static int start_replay(const char *fname, int speed, float gain, test_mode_t mo
     }
 
     test_mode_set(mode);
-    printf("回放中：波形在屏上；串口只打进度（每 5 万样本一行），完整峰序列写 SD 卡。\n");
-    printf("结果文件: %s（跑到 EOF 才有；中途 run-stop 不落盘）\n", result_path);
-    printf("对账：把该文件拷到 PC，python tools/s3_verify_replay.py <文件>\n");
+
+    if (dump_result) {
+        printf("回放中：波形在屏上；串口只打进度（每 5 万样本一行），完整峰序列写 SD 卡。\n");
+        printf("结果文件: %s（跑到 EOF 才有；中途 run-stop 不落盘）\n", result_path);
+        printf("对账：把该文件拷到 PC，python tools/s3_verify_replay.py <文件>\n");
+    } else {
+        printf("纯回放中：波形在屏上；不写 SD、不进测试模式（UI 按钮保持可用）。\n");
+        printf("改增益/走纸/冻结照常用屏上按钮。\n");
+    }
     printf("中途停止用 run-stop。\n");
     return 0;
 }
@@ -969,7 +1005,7 @@ static int cmd_mit_run(int argc, char **argv)
 
     char fname[64];
     snprintf(fname, sizeof(fname), "mit_%s_500.bin", rec);
-    return start_replay(fname, speed, gain, TEST_MIT);
+    return start_replay(fname, speed, gain, TEST_MIT, true);
 }
 
 /* ladder-run <bpm> [gain] [--speed N] */
@@ -1021,7 +1057,86 @@ static int cmd_ladder_run(int argc, char **argv)
     /* 阶梯文件命名是三位补零：sr_060bpm.bin */
     char fname[64];
     snprintf(fname, sizeof(fname), "sr_%03dbpm.bin", bpm);
-    return start_replay(fname, speed, gain, TEST_LADDER);
+    return start_replay(fname, speed, gain, TEST_LADDER, true);
+}
+
+/* play <file> [gain] [--speed N] —— ★T210：通用回放入口（不猜命名规则）
+ *
+ * 为什么单独立一条，而不是给 mit-run 加个"任意名字"开关：
+ *   `mit-run <rec>` 的 rec 是**记录号**，固件把它硬拼成 `mit_<rec>_500.bin`
+ *   （`:1002` 上一行）。根目录那些 `alt-120bpm.bin` / `test-short.bin` /
+ *   `ecg_dual_5min.bin` 既不符合 MIT 规则也不符合阶梯规则 ⇒ **一条命令都用不了**，
+ *   只能点屏上「回放」按钮，而按钮只会选 `ecg.bin`(single) 与最大的 dual 文件。
+ *   `play` 就是补这个缺口：**文件名原样贴进去**，不做任何拼装。
+ *
+ * 与 mit-run / ladder-run 的**三处刻意差异**（都是为了不动到 MIT 那条链）：
+ *   ① `TEST_NORMAL` —— 不进测试模式，UI 按钮照常可用（MIT 路径仍是 TEST_MIT/LADDER）；
+ *   ② `dump_result = false` —— 不写 `*_result.txt`、不占 SD 写带宽（MIT 路径仍写）；
+ *   ③ 文件名**不补 `_500`、不派生 stem** —— 原样就用。
+ *   ⇒ 两条 MIT 路径的落盘内容/顺序/时机逐字不变，`s3_verify_replay.py` 那套对账不受影响。
+ *
+ * 例：
+ *   play alt-120bpm.bin
+ *   play test-short 10x --speed 1        # 后缀可省，增益/倍速照 mit-run 的写法
+ *   play ecg_dual_5min.bin               # LEN=103 双通道
+ */
+static struct {
+    struct arg_str *file;
+    struct arg_str *gain;
+    struct arg_int *speed;
+    struct arg_end *end;
+} s_play_args;
+
+static int cmd_play(int argc, char **argv)
+{
+    const int nerrors = arg_parse(argc, argv, (void **)&s_play_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, s_play_args.end, argv[0]);
+        printf("用法: play <文件> [gain] [--speed 1|2|4|8]\n");
+        printf("  例: play alt-120bpm.bin / play test-short --speed 4 / play ecg_dual_5min\n");
+        printf("%s\n", gain_usage());
+        return 1;
+    }
+    if (s_play_args.file->count == 0) {
+        printf("用法: play <文件> [gain] [--speed 1|2|4|8]\n");
+        return 1;
+    }
+
+    const int speed = (s_play_args.speed->count > 0)
+                      ? s_play_args.speed->ival[0] : 1;
+
+    float gain = 0.0f;
+    if (s_play_args.gain->count > 0) {
+        const char *gs = s_play_args.gain->sval[0];
+        if (!parse_gain_arg(gs, &gain)) {
+            printf("增益写法不认识: %s\n", gs);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+        if (!gain_is_supported(gain)) {
+            printf("增益 %.2f mm/mV 不在档位内。\n", (double)gain);
+            printf("%s\n", gain_usage());
+            return 1;
+        }
+    }
+
+    /* ---- 文件名归一：只做两件最小的事 ----
+     *   ① 带路径就取最后一段（`/sdcard/ecg.bin` → `ecg.bin`）——
+     *      因为 `start_replay()` 自己会拼 `/sdcard/` 与 `/sdcard/s7_batch/`，
+     *      传入绝对路径会拼成 `/sdcard//sdcard/ecg.bin` 而找不到。
+     *   ② 没有 `.bin` 后缀就补上（让人能偷懒少打 4 个字符）。
+     * 🛑 除此之外**一个字节都不改** —— 不补 `_500`、不派生 stem，这是本条与 mit-run 的分界。 */
+    const char *in = s_play_args.file->sval[0];
+    const char *base = strrchr(in, '/');
+    base = (base != NULL) ? (base + 1) : in;
+
+    char fname[96];
+    const size_t bl = strlen(base);
+    const bool has_bin = (bl >= 4) &&
+                         (strcasecmp(base + bl - 4, ".bin") == 0);
+    snprintf(fname, sizeof(fname), "%s%s", base, has_bin ? "" : ".bin");
+
+    return start_replay(fname, speed, gain, TEST_NORMAL, false);
 }
 
 /* run-stop：停止回放并关掉峰序列输出 */
@@ -1197,8 +1312,16 @@ static int cmd_485_start(int argc, char **argv)
            APP_485_UART_NUM, APP_485_TX_GPIO, APP_485_RX_GPIO,
            (unsigned long)rs485_baud());
     printf("  差分线：A=P1-10(TX+)  B=P1-9(TX-)；方向由硬件自动切换\n");
-    printf("  PC 侧：python tools/rs485_stream.py --port COM27 --file <ecg.bin>\n");
-    printf("  数据到达后屏上波形自动出现（UI 无需切换）；485-stat 看对账\n");
+    /* 🛑 旧文案已删（2026-11-04 18:08）：原来还有一行是 S9a「PC 发波形」时期写的
+     *    「PC 侧：python tools/rs485_stream.py --port COM27」—— 现在**每一处都是错的**
+     *    （COM27 早不存在、PC 也已不在链路上）。猛哥就是被它误判成"板上还在跑旧的
+     *    PC 测试固件"。凡是会随架构失效的提示，宁可只留判据、不留地址。 */
+    /* ★T209（11-05）：屏上「开始」按钮已**永久置灰**，采集启停只在 CLI 里做。 */
+    printf("  STM32 侧：485-send start（发 0x01）／ 485-send stop（发 0x02）\n");
+    printf("  ⚠ 屏上「开始」键恒灰，不是坏了 —— 没有 STOP 键，按钮文字一旦变「采集中」就回不去\n");
+    printf("  STM32 停在 STOP 时 rx=0 属正常；485-stat 看对账（frames 在涨 = 真在出数据）\n");
+    /* 仍刷一次：布局与其它键的灰显状态要靠它初始化（本函数可能早于首次 UI tick） */
+    ui_button_bar_refresh();
     return 0;
 }
 
@@ -1239,6 +1362,9 @@ static int cmd_485_stop(int argc, char **argv)
     } else {
         printf("SD 未挂载，保持空闲（重新上电可恢复）\n");
     }
+
+    /* ★T209：源已切走 ⇒ 刷一次按钮（「开始」键恒灰，此处只为其它键的灰显状态跟上） */
+    ui_button_bar_refresh();
     return 0;
 }
 
@@ -1269,6 +1395,19 @@ static int cmd_485_stat(int argc, char **argv)
            (unsigned long)st.frames, (unsigned long)st.crc_errors,
            (unsigned long)st.resync_bytes, (unsigned long)st.bad_len,
            (unsigned long)st.seq_gaps);
+    printf("快照      : snapshots=%lu（★>0 即证明下行通：0x10 回执只由命令生成）\n",
+           (unsigned long)st.snapshots);
+    /* ★T209（11-05）：STA 回读 —— `485-send mode/notch` 的**唯一验收口**。
+     * 🛑 此前 `app_state_set_sta()` 全工程零调用 ⇒ 这里读到的永远是 unknown，
+     *    屏上「诊断/陷波」也是恒 0x02 的假值。现在由 `ecg_pipeline.c` 在每帧
+     *    显示帧上抛（生产者任务写，CLI/UI 读，8 位访问无需加锁）。 */
+    {
+        const app_state_t *as = app_state_ro();
+        char stas[64];
+        ecg_sta_to_str(as->sta, as->has_sta, stas, sizeof(stas));
+        printf("STATUS    : %s  (raw=0x%02X %s)\n", stas, (unsigned)as->sta,
+               as->has_sta ? "有 STA" : "★无帧流/未上报");
+    }
     printf("环缓      : pushed=%lu  dropped=%lu  水位=%u 帧=%lu\n",
            (unsigned long)ps.pushed, (unsigned long)ps.dropped,
            (unsigned)ps.ring_level, (unsigned long)ps.frames_read);
@@ -1277,6 +1416,191 @@ static int cmd_485_stat(int argc, char **argv)
            (hrok ? (double)hr.bpm : 0.0), (unsigned long)(hrok ? hr.peak_total : 0),
            (unsigned long)(hrok ? hr.fed : 0));
     return 0;
+}
+
+/* ---- 485-send（★T208 / ★T209）----
+ *
+ *   485-send start     发 `0x01`（整帧 AA 55 80 01 00 01 5D）—— ★不幂等，只发一帧
+ *   485-send stop      发 `0x02`（整帧 AA 55 80 01 00 02 54）—— 幂等，无回执
+ *   485-send snap      发 `0x10`（整帧 AA 55 80 01 00 10 2A）—— 仅 STOP 态回 80 B 快照
+ *   485-send mode 0|1  发 `0x04`（AA 55 80 02 00 04 00 EF / ...01 E8）诊断 / 监护
+ *   485-send notch 0|1 发 `0x05`（AA 55 80 02 00 05 00 FA / ...01 FD）陷波关 / 开
+ *   485-send ch2 0|1   发 `0x06`（AA 55 80 02 00 06 00 C5 / ...01 C2）仅I / I&II
+ *   （六条 CRC 均已按 poly=0x07/init=0x00/不反射 实算，并用 START/STOP/SNAP 三帧自检过）
+ *
+ * ★T209（11-05）起屏上「开始」按钮永久置灰，**采集启停只有这一条路**：
+ *   ⚠ 且 `0x01`/`0x02` 都**不会**让按钮文字变化（那是 T208 方案，已撤）。
+ *     要判"采集是否真在跑"，只看 `485-stat` 的 `frames` 在不在涨。
+ *
+ * 🛑 **不提供"原样发十六进制"**（猛哥 11-04 17:44 拍板，两条理由）：
+ *   ① 它与 `start` 发的是**同一串字节** —— 多一条入口就多一处误用面；
+ *   ② CRC 到底有没有在校验，不需要造坏帧去试：**用代码审 + 统计量**即可。
+ *      硬件乱码会自己显形在 `485-stat` 上：
+ *        `crc_err`（CRC 错帧）／`resync`（重同步跳过的字节）／`bad_len`（LEN 非法）
+ *        ／`frame`+`parity`（UART 层帧错/校验错）。
+ *      ⇒ 这些数一起涨＝硬件/接线问题；全为 0 而没波形＝别再怀疑 CRC。
+ */
+static int cmd_485_send(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("用法: 485-send start|stop|snap|mode|notch|ch2\n");
+        printf("  start     发 0x01 START（与屏上「开始」按钮同一条）\n");
+        printf("  stop      发 0x02 STOP（本设计不设停止键，停采集用它）\n");
+        printf("  snap      发 0x10 读快照（★STOP 态才有回执；看 485-stat 的 snapshots）\n");
+        printf("  mode 0|1  发 0x04 SET_MODE 诊断(0)/监护(1)   ★回执看 STA.bit0\n");
+        printf("  notch 0|1 发 0x05 SET_NOTCH 关(0)/开(1)      ★回执看 STA.bit1\n");
+        printf("  ch2 0|1   发 0x06 SET_CHANNEL 仅I(0)/I&II(1)  ★仅 STOP 态，回 80 B 快照\n");
+        return 1;
+    }
+    if (!rs485_ready()) {
+        printf("485 未初始化，先执行 485-start\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "start") == 0) {
+        const esp_err_t e = ecg_cmd_start();
+        printf("START(0x01) -> %s\n", esp_err_to_name(e));
+        return (e == ESP_OK) ? 0 : 1;
+    }
+    if (strcmp(argv[1], "stop") == 0) {
+        const esp_err_t e = ecg_cmd_stop();
+        printf("STOP(0x02) -> %s\n", esp_err_to_name(e));
+        return (e == ESP_OK) ? 0 : 1;
+    }
+    if (strcmp(argv[1], "snap") == 0) {
+        /* ★T208（11-05）：整帧 AA 55 80 01 00 10 2A。
+         * 回执是 80 B 快照帧，落在 `485-stat` 的 snapshots 上（不进波形）。
+         * 🛑 STOP 态才有回执 —— RUN 态静默是**协议规定**，不是丢包。 */
+        ecg_pipeline_stream_stat_t st0, st1;
+        ecg_pipeline_get_stream_stat(&st0);
+        const esp_err_t e = ecg_cmd_snapshot();
+        if (e != ESP_OK) {
+            printf("SNAPSHOT(0x10) -> %s\n", esp_err_to_name(e));
+            return 1;
+        }
+        /* 等 0.6 s 再取一次：STM32 回 80 B ≈ 6.9 ms，但要走完 UART+任务调度 */
+        vTaskDelay(pdMS_TO_TICKS(600));
+        ecg_pipeline_get_stream_stat(&st1);
+        const uint32_t dn = st1.snapshots - st0.snapshots;
+        printf("SNAPSHOT(0x10) -> OK   快照回执 %lu 帧\n", (unsigned long)dn);
+        if (dn == 0u) {
+            printf("  ⇒ 没有回执。两种可能，都别急着怪代码：\n");
+            printf("     ① STM32 正在 RUN（协议规定 RUN 态静默）—— 先 485-send stop\n");
+            printf("     ② 下行没到 STM32（线路/极性/UT-2211 接收侧）\n");
+            printf("     看 485-stat：bad_len/crc_err 一起涨＝线上有问题\n");
+            return 1;
+        }
+        return 0;
+    }
+
+    /* ---- ★T209（11-05）：三条带 ARG 的采集端参数命令 ----
+     *
+     *   mode 0|1   0x04 SET_MODE     0=诊断 1=监护
+     *   notch 0|1  0x05 SET_NOTCH    0=关   1=开
+     *   ch2 0|1    0x06 SET_CHANNEL  0=仅I  非0=I&II
+     *
+     * 三条**验收方式不同**（见 `ecg_cmd.h` 的口径表）：
+     *   mode / notch → 回执只在**下一帧 STA** 里 ⇒ 必须 RUN 态才看得到；
+     *   ch2          → 回一帧 **80 B 快照**（REQID=0x06）⇒ 必须 **STOP 态**才发得进去。
+     * 🛑 参数只收 `0` / `1`：固件虽然有长度门（LEN 必须 == 2），但 ARG 值它
+     *   不做范围校验（交给内核容错）⇒ 本层收紧，避免打出手误的档位。 */
+    if ((strcmp(argv[1], "mode") == 0) ||
+        (strcmp(argv[1], "notch") == 0) ||
+        (strcmp(argv[1], "ch2") == 0)) {
+
+        if (argc < 3) {
+            printf("用法: 485-send %s 0|1\n", argv[1]);
+            return 1;
+        }
+        if ((strcmp(argv[2], "0") != 0) && (strcmp(argv[2], "1") != 0)) {
+            printf("参数只接受 0 或 1（收到 '%s'）\n", argv[2]);
+            return 1;
+        }
+        const uint8_t on = (uint8_t)((argv[2][0] == '1') ? 1u : 0u);
+
+        if (strcmp(argv[1], "ch2") == 0) {
+            /* 🛑 **唯一带状态门的参数命令：仅 STOP 态生效**（`vcomcmd.c:755`）。
+             *   RUN 态 `START_CON=1` 锁着配置寄存器 ⇒ 固件**静默丢弃**、一字节不回，
+             *   现场极易误判成"命令没到"或"下行不通"。所以先看帧流在不在涨，
+             *   直接给出该敲的下一步，别让人去猜。 */
+            ecg_pipeline_stream_stat_t s0, s1;
+            ecg_pipeline_get_stream_stat(&s0);
+
+            const esp_err_t e = ecg_cmd_set_channel(on);
+            if (e != ESP_OK) {
+                printf("SET_CHANNEL(0x06) -> %s\n", esp_err_to_name(e));
+                return 1;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(600));
+            ecg_pipeline_get_stream_stat(&s1);
+            const uint32_t dn = s1.snapshots - s0.snapshots;
+            printf("SET_CHANNEL(0x06) arg=%u -> OK   快照回执 %lu 帧\n",
+                   (unsigned)on, (unsigned long)dn);
+
+            if (dn == 0u) {
+                printf("  ⇒ 没有回执。按顺序排查（第 ① 条最常见）：\n");
+                printf("     ① STM32 还在 RUN ⇒ 本条被状态门丢弃。先 485-send stop 再发\n");
+                printf("     ② 下行没到 STM32（线路/UT-2211 接收侧）\n");
+                printf("     顺序：485-send stop → 485-send ch2 %u → 485-send start\n",
+                       (unsigned)on);
+                return 1;
+            }
+            printf("  ⇒ 通道 II %s（后续帧长 %s、STA.bit2 跟随；run 起来后看 485-stat）\n",
+                   on ? "已使能" : "已关闭", on ? "103（双通道）" : "53（单通道）");
+
+            /* ★T209（11-05）：画布**必须跟着切**，这是"通道II 只有一条基线"的根治点。
+             *
+             * 🛑 真因（代码可证，不是猜测）：
+             *   ① STM32 侧 `ads1293.c:1533-1538` 明写 **CH2 ≡ CH1** —— CH2 不做滤波/
+             *      重采样，直接把 CH1 的 25 个点复制过去 ⇒ 只要真在发 LEN=103，
+             *      两路**必然逐位相同**，物理上不可能出现"一路有波形、另一路是平线"。
+             *   ② 那平线是哪来的？`ecg_pipeline.c:429`：
+             *        `v2 = (k < fr.n_ch2) ? fr.ch2[k] : 0;`
+             *      收到 LEN=53 单通道帧时 `n_ch2 == 0` ⇒ CH2 **整段填 0** ⇒ 画出来
+             *      **正好是一条贴零的水平基线**。
+             *   ③ 屏上那个「通道II」键（`ui_button_bar.c:201`）只调
+             *      `ui_waveform_set_dual_channel()` 换画布，**一个字节都不发给 STM32**
+             *      ⇒ STM32 照旧发 LEN=53 ⇒ 命中 ②。
+             * ⇒ 结论：那个键"看起来使能了通道II"，实际只换了画布。
+             *   本条命令才是真正切 STM32 的入口，所以两边必须一起切。 */
+            ui_waveform_set_dual_channel(on != 0u);
+            ui_waveform_clear();
+            ui_button_bar_refresh();
+            printf("  ⇒ 画布已切到%s\n", on ? "双通道（CH2 与 CH1 逐位相同 = 切分正确的硬判据）"
+                                            : "单通道");
+            return 0;
+        }
+
+        /* ---- mode / notch ---- */
+        const bool is_mode = (strcmp(argv[1], "mode") == 0);
+        const esp_err_t e = is_mode ? ecg_cmd_set_mode(on) : ecg_cmd_set_notch(on);
+        if (e != ESP_OK) {
+            printf("%s(0x%02X) -> %s\n", is_mode ? "SET_MODE" : "SET_NOTCH",
+                   is_mode ? 0x04 : 0x05, esp_err_to_name(e));
+            return 1;
+        }
+
+        /* 无快照回执 —— 真值只在**下一帧 STA**里（帧周期 = 25 样本 × 2 ms = 50 ms，
+         * 300 ms 足够跨 6 帧）。STOP 态没有帧流 ⇒ 这里必然读到 unknown，
+         * 那不是失败，是"还没开始采集"。 */
+        vTaskDelay(pdMS_TO_TICKS(300));
+        const app_state_t *as = app_state_ro();
+        char stas[64];
+        ecg_sta_to_str(as->sta, as->has_sta, stas, sizeof(stas));
+
+        printf("%s(0x%02X) arg=%u -> OK   现 STA=%s\n",
+               is_mode ? "SET_MODE" : "SET_NOTCH", is_mode ? 0x04 : 0x05,
+               (unsigned)on, stas);
+        if (!as->has_sta) {
+            printf("  ⇒ 读到 unknown：**STM32 没在出帧**（STOP 态）—— 本条已生效但无回执，\n");
+            printf("     485-send start 之后再看 485-stat 的 STA 行即可确认\n");
+        }
+        return 0;
+    }
+
+    printf("未知参数 '%s'（只支持 start / stop / snap / mode / notch / ch2）\n", argv[1]);
+    return 1;
 }
 
 static void register_commands(void)
@@ -1293,6 +1617,13 @@ static void register_commands(void)
     s_ladder_run_args.gain  = arg_str0(NULL, NULL, "[gain]", "增益 2.5/5/10/20 mm/mV 或 0.5x/1x/2x/4x");
     s_ladder_run_args.speed = arg_int0(NULL, "speed", "<n>", "回放倍速 1/2/4/8（默认 1）");
     s_ladder_run_args.end   = arg_end(3);
+
+    /* ★T210：play —— 文件名原样贴进去，不拼规则 */
+    s_play_args.file  = arg_str1(NULL, NULL, "<file>",
+                                 "SD 上的文件名，如 alt-120bpm.bin（.bin 可省）");
+    s_play_args.gain  = arg_str0(NULL, NULL, "[gain]", "增益 2.5/5/10/20 mm/mV 或 0.5x/1x/2x/4x");
+    s_play_args.speed = arg_int0(NULL, "speed", "<n>", "回放倍速 1/2/4/8（默认 1）");
+    s_play_args.end   = arg_end(3);
 
     s_result_dump_args.stem = arg_str1(NULL, NULL, "<stem>", "结果文件名主干，如 mit_105");
     s_result_dump_args.end  = arg_end(1);
@@ -1341,6 +1672,12 @@ static void register_commands(void)
             .help    = "停止回放并关闭峰序列输出/落盘",
             .hint    = NULL,
             .func    = &cmd_run_stop,
+        },
+        {   /* ★T210：通用回放，文件名原样（不拼 mit_/sr_ 规则，不写结果文件） */
+            .command = "play",
+            .help    = "回放 SD 上任意 .bin（纯看波形：不写结果文件、不进测试模式）",
+            .hint    = "<file> [gain] [--speed 1|2|4|8]",
+            .func    = &cmd_play,
         },
         {
             .command  = "result-dump",
@@ -1421,6 +1758,12 @@ static void register_commands(void)
             .help    = "打印 485 链路/解帧/环缓/心率统计",
             .hint    = NULL,
             .func    = &cmd_485_stat,
+        },
+        {
+            .command = "485-send",
+            .help    = "下发命令：start/stop/snap/mode/notch/ch2（★本工程唯一发送入口）",
+            .hint    = "start|stop|snap|mode 0|1|notch 0|1|ch2 0|1",
+            .func    = &cmd_485_send,
         },
     };
 

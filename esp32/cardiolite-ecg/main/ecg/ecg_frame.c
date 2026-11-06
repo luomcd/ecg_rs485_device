@@ -121,7 +121,14 @@ void ecg_frame_parse_raw(ecg_frame_t *fr, const uint8_t *raw)
     fr->seq     = (uint16_t)(payload[0] | ((uint16_t)payload[1] << 8));
     fr->sta     = odd ? payload[2] : (uint8_t)ECG_STATE_UNKNOWN;
 
-    const uint16_t n_total = (uint16_t)((len - hdr_len) / 2u);
+    /* 🛑 T208 修复（11-05）：`len < hdr_len` 时无符号下溢。
+     *   原式 `(uint16_t)((len - hdr_len) / 2u)` 在 len=1、hdr_len=3 时
+     *   ⇒ 65534/2 = 32767 ⇒ 被下面 clamp 到 ECG_MAX_SAMPLES_PER_CH=50
+     *   ⇒ **越界读 ~99 B 且 CRC 仍然通过**（T206 §9.1b 已核到行号）。
+     *   触发源就在本链路上：ESP32 自己发的下行帧 LEN=1，半双工回环能收到。
+     *   现在 len 不足头部长度时 n_total 记 0，不产生任何样本。 */
+    const uint16_t n_total =
+        (len > hdr_len) ? (uint16_t)((len - hdr_len) / 2u) : 0u;
 
     if (len == ECG_LEN_DUAL) {
         /* 双通道：块布局不交错，前一半 CH1，后一半 CH2 */
