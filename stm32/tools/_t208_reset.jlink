@@ -1,0 +1,7 @@
+si SWD
+speed 4000
+device STM32L476JG
+connect
+r
+g
+qc
