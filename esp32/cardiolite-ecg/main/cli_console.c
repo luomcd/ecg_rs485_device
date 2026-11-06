@@ -1435,8 +1435,38 @@ static int cmd_485_stat(int argc, char **argv)
         const app_state_t *as = app_state_ro();
         char stas[64];
         ecg_sta_to_str(as->sta, as->has_sta, stas, sizeof(stas));
-        printf("STATUS    : %s  (raw=0x%02X %s)\n", stas, (unsigned)as->sta,
-               as->has_sta ? "有 STA" : "★无帧流/未上报");
+
+        /* ★T213（11-06）：**帧龄 + 静态说明**。
+         *
+         * 🛑 `sta` 只在 485 生产者收到显示帧时刷新（`ecg_pipeline.c:436`），停流后
+         *   **不会失效**、`has_sta` 也永远为真 ⇒ 单看这一行，分不出「正在通信」
+         *   和「已经停了半小时」。而 `485-send mode/notch` 的唯一验收口就是它：
+         *   下行丢包（当前成功率约 50%）时 STA 不变，会被误读成"命令生效"。
+         *
+         * ⇒ 三个判据一起给：
+         *   ① 距上次更新多少秒（`app_state.sta_ms`，T213 新增）
+         *   ② ≥2 s 直接标 ★陈旧（500 Hz 下每帧 25 样本＝50 ms，2 s 已漏 40 帧）
+         *   ③ FILE 源下明确说"本行不刷新"（该源压根不写 sta）
+         */
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        const uint32_t age_ms = now_ms - as->sta_ms;   /* uint32 回绕相减仍正确 */
+        const double   age_s  = (double)age_ms / 1000.0;
+
+        if (!as->has_sta) {
+            printf("STATUS    : %s  (raw=0x%02X ★从未收到带 STA 的帧)\n",
+                   stas, (unsigned)as->sta);
+        } else if (!ecg_pipeline_src_is_rs485()) {
+            printf("STATUS    : %s  (raw=0x%02X, 距更新 %.1f s；"
+                   "★当前是 FILE 源，本行不刷新)\n",
+                   stas, (unsigned)as->sta, age_s);
+        } else if (age_ms >= 2000u) {
+            printf("STATUS    : %s  (raw=0x%02X, 距更新 %.1f s "
+                   "★陈旧：STM32 已停流，这是最后一帧的值)\n",
+                   stas, (unsigned)as->sta, age_s);
+        } else {
+            printf("STATUS    : %s  (raw=0x%02X, 距更新 %.1f s；停流时不刷新)\n",
+                   stas, (unsigned)as->sta, age_s);
+        }
     }
     printf("环缓      : pushed=%lu  dropped=%lu  水位=%u 帧=%lu\n",
            (unsigned long)ps.pushed, (unsigned long)ps.dropped,

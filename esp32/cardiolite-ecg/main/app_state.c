@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"      /* ★T213：STA 帧龄时基 */
 
 static const char *TAG = "app_state";
 
@@ -107,6 +108,10 @@ void app_state_set_sta(uint8_t sta, bool has_sta)
 {
     s_st.sta     = has_sta ? sta : 0xFF;
     s_st.has_sta = has_sta;
+    /* ★T213：记下写入时刻，CLI 据此算帧龄（`485-stat` 的 STATUS 行）。
+     * 放在这里而不是调用方：所有写入路径都必须盖时间戳，漏一处就又回到
+     * 「停流后看不出陈旧」的老问题。 */
+    s_st.sta_ms  = (uint32_t)(esp_timer_get_time() / 1000);
 }
 
 void app_state_set_file_ok(bool ok)
