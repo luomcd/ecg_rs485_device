@@ -211,6 +211,11 @@ static void dump_buf_flush_to_file(void)
     if (s_dump_path[0] == '\0') {
         return;
     }
+    if (s_dump_fill == 0) {
+        /* 🛑 空缓冲不许开文件：`fopen(...,"w")` 会把已有文件截成 0 字节。
+         * 典型场景：FILE 源 EOF 已落盘 ⇒ 之后实时记录任务又 flush 一次 ⇒ 内容全没了。 */
+        return;
+    }
     FILE *f = fopen(s_dump_path, "w");
     if (f == NULL) {
         ESP_LOGW(TAG, "cannot open replay result file %s -- 本次结果只在串口", s_dump_path);
@@ -1034,6 +1039,17 @@ void ecg_pipeline_set_rpeak_dump(bool on)
     }
     s_rp_dump = on;
     ESP_LOGI(TAG, "rpeak dump -> %s", on ? "on" : "off");
+}
+
+void ecg_pipeline_flush_dump(void)
+{
+    if (s_dump_path[0] == '\0') {
+        return;                     /* 没设目标文件 ⇒ 无事可做 */
+    }
+    dump_line_flush();              /* 先让攒了一半的 16 峰成行 */
+    dump_buf_flush_to_file();       /* 内部已挡「空缓冲直接 return」 */
+    s_dump_fill = 0;                /* 落完清空，避免下一次重复写同一段 */
+    ESP_LOGI(TAG, "dump flushed -> %s", s_dump_path);
 }
 
 void ecg_pipeline_set_speed(int speed)

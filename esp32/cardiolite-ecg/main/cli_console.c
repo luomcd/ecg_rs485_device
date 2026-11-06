@@ -1239,29 +1239,134 @@ static int cmd_restart(int argc, char **argv)
     return 0;
 }
 
-/* ---- rpeak on|off：R 峰打点显示开关（★T216）----
+/* ---- rpeak：R 峰打点显示开关 + QRS 序列记录（★T216 / ★T217）----
  *
- * 🛑 这是 **ESP32 本地**开关，不是 `485-send` —— STM32 侧没有任何 R 峰代码
- *   （全工程 grep `rpeak/RPEAK/R波` 零命中），R 峰是 ESP32 本地算的。
- *   把它做成下行命令，STM32 收到也没有东西可执行。
+ *   rpeak                查询：打点开关 + 记录状态与剩余时间
+ *   rpeak on|off         打点显示开关（**只停绘制，不停检测**，BPM 不受影响）
+ *   rpeak rec            开始记录 QRS 峰序列，**固定 300 s（5 min）到点自动落盘**
+ *   rpeak rec off        提前终止并立即落盘
  *
- * 语义：**只停绘制，不停检测**。关掉后 `sync_rpeaks()` 照收峰、BPM 照算，
- * 只是不在波形上画圆点 —— 所以「关打点」不会让 BPM 变成 `--`。 */
+ * 🛑 时长为什么固定 300 s、且不给参数：32 KB 缓冲在 300 bpm 下 5 min 只占 33%，
+ *   10 min 占 64%，15 min 就贴到 98% 的边；而**溢出是静默截断**（只置
+ *   `s_dump_overflow`，不报错）⇒ 开放任意时长等于给用户一个"看起来记了、其实丢了"
+ *   的坑。要记更久必须先走 T215 §2.6 方案甲（缓冲挪 PSRAM）。
+ *
+ * 🛑 打点是 **ESP32 本地**功能，不是 `485-send` —— STM32 侧全工程 grep
+ *   `rpeak/RPEAK/R波` 零命中，R 峰是本地算的，做成下行命令那边也没人执行。
+ *
+ * 🛑 记录**只在 485 实时源下允许**：FILE 源的 `s_dump_path` 归 `mit-run` 用，
+ *   实时记录若共用同一个文件路径会覆盖批处理结果。
+ *
+ * 🛑 记录内容目前只有峰号（`P <相对号>`，16 峰/行），**不含峰处波形值** ⇒
+ *   能算 RR 间期 / RMSSD / 抖动 σ，但**判不了"点是否正好落在峰顶"**。后者要改
+ *   格式，会动到 `ecg_batch_eval.py` 等批处理口径，另行定（T215 §2.6）。 */
+#define RPEAK_REC_PATH   "/sdcard/rpeak_hrv.txt"
+#define RPEAK_REC_SECS   300u      /* 固定 5 min，见上面容量说明 */
+
+static volatile bool     s_rec_running = false;
+static volatile bool     s_rec_cancel  = false;
+static volatile uint32_t s_rec_end_ms  = 0;
+
+/* 记录任务：每 100 ms 检查一次，到点或收到 cancel 就收尾落盘。
+ * 🛑 不用 vTaskDelete 强杀 —— 杀在临界点会留下半截状态；用标志位让它自己退。 */
+static void rpeak_rec_worker(void *arg)
+{
+    (void)arg;
+    const uint32_t ticks = (RPEAK_REC_SECS * 1000u) / 100u;
+
+    for (uint32_t i = 0; i < ticks; i++) {
+        if (s_rec_cancel) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    ecg_pipeline_set_rpeak_dump(false);
+    ecg_pipeline_flush_dump();          /* 实时源没有 EOF ⇒ 必须主动落盘 */
+    s_rec_running = false;
+    s_rec_end_ms  = 0;
+    ESP_LOGI(TAG, "rpeak rec done (%u s) -> " RPEAK_REC_PATH, (unsigned)RPEAK_REC_SECS);
+    vTaskDelete(NULL);
+}
+
 static int cmd_rpeak(int argc, char **argv)
 {
+    /* ---- 查询 ---- */
     if (argc < 2) {
         printf("R 峰打点：%s\n", ui_waveform_get_rp_show() ? "on" : "off");
-        printf("用法: rpeak on|off   （只停绘制，检测与 BPM 不变）\n");
+        if (s_rec_running) {
+            const uint32_t now  = (uint32_t)(esp_timer_get_time() / 1000);
+            const uint32_t left = (s_rec_end_ms > now) ? (s_rec_end_ms - now) : 0;
+            printf("QRS 记录：on（剩 %lu s）-> %s\n",
+                   (unsigned long)(left / 1000u), RPEAK_REC_PATH);
+        } else {
+            printf("QRS 记录：off\n");
+        }
+        printf("用法: rpeak on|off | rpeak rec | rpeak rec off\n");
         return 0;
     }
 
+    /* ---- rpeak rec / rpeak rec off ---- */
+    if (strcasecmp(argv[1], "rec") == 0) {
+        if (argc >= 3 && strcasecmp(argv[2], "off") == 0) {
+            if (!s_rec_running) {
+                printf("当前没在记录\n");
+                return 0;
+            }
+            s_rec_cancel = true;        /* 任务会在 ≤100 ms 内收尾落盘 */
+            printf("QRS 记录停止中，正在落盘…\n");
+            return 0;
+        }
+        if (argc >= 3) {
+            printf("记录时长固定 %u s（5 min），不需要参数\n", (unsigned)RPEAK_REC_SECS);
+            printf("用法: rpeak rec     （开始）| rpeak rec off（提前停）\n");
+            return 1;
+        }
+
+        if (!ecg_pipeline_src_is_rs485()) {
+            printf("⚠ 只在 485 实时源下记录（FILE 源会覆盖 mit-run 的批处理结果）。先 485-start。\n");
+            return 1;
+        }
+        if (!storage_sd_is_mounted()) {
+            printf("SD 卡未挂载，无法记录。\n");
+            return 1;
+        }
+        if (s_rec_running) {
+            printf("已在记录中（剩 %lu s），先 `rpeak rec off`。\n",
+                   (unsigned long)((s_rec_end_ms > (uint32_t)(esp_timer_get_time() / 1000))
+                                   ? ((s_rec_end_ms - (uint32_t)(esp_timer_get_time() / 1000)) / 1000u)
+                                   : 0u));
+            return 1;
+        }
+
+        ecg_pipeline_set_dump_file(RPEAK_REC_PATH);
+        ecg_pipeline_set_rpeak_dump(true);
+
+        s_rec_cancel  = false;
+        s_rec_running = true;
+        s_rec_end_ms  = (uint32_t)(esp_timer_get_time() / 1000) + RPEAK_REC_SECS * 1000u;
+
+        if (xTaskCreate(rpeak_rec_worker, "rpeak_rec", 3072, NULL, 2, NULL) != pdPASS) {
+            s_rec_running = false;
+            s_rec_end_ms  = 0;
+            ecg_pipeline_set_rpeak_dump(false);
+            printf("创建记录任务失败（内存不足？）\n");
+            return 1;
+        }
+        printf("QRS 记录开始：%u s（5 min）-> %s\n",
+               (unsigned)RPEAK_REC_SECS, RPEAK_REC_PATH);
+        printf("  到点自动落盘；提前停用 `rpeak rec off`；回传 `result-dump rpeak_hrv.txt`\n");
+        return 0;
+    }
+
+    /* ---- rpeak on|off ---- */
     bool on;
     if (strcasecmp(argv[1], "on") == 0) {
         on = true;
     } else if (strcasecmp(argv[1], "off") == 0) {
         on = false;
     } else {
-        printf("用法: rpeak on|off\n");
+        printf("用法: rpeak on|off | rpeak rec | rpeak rec off\n");
         return 1;
     }
 
@@ -1999,8 +2104,8 @@ static void register_commands(void)
         },
         {
             .command = "rpeak",
-            .help    = "R 峰打点显示开关（本地功能，非下行命令）",
-            .hint    = "on|off",
+            .help    = "R 峰打点开关 / QRS 序列记录（本地功能，非下行命令）",
+            .hint    = "[on|off] | rec（300 s 固定） | rec off",
             .func    = &cmd_rpeak,
         },
         {
