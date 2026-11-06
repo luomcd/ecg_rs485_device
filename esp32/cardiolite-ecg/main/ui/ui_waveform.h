@@ -66,6 +66,18 @@ void ui_waveform_clear(void);
 bool ui_waveform_is_frozen(void);
 
 /**
+ * @brief ★T216：R 峰打点显示开关（默认开，CLI `rpeak on|off`）。
+ *
+ * 语义：**只停绘制，不停检测** —— 关掉后 `sync_rpeaks()` 照收、BPM 照算，
+ * 只是不在波形上画圆点。重新打开时只画**当前可见窗口内**的峰，不会补画历史点。
+ * @note 内部会失效画布并立即重绘一帧；调用方需持有 LVGL 锁。
+ */
+void ui_waveform_set_rp_show(bool on);
+
+/** @brief 当前是否画 R 峰标记 */
+bool ui_waveform_get_rp_show(void);
+
+/**
  * @brief 双通道显示模式开关（画布 2 从"无数据"改为画 CH2）。
  *
  * ⚠ 需配合 LEN=103 的数据文件（如 test-dualch.bin）才看得出效果；

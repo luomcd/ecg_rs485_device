@@ -119,6 +119,7 @@ static uint16_t  s_c_rpeak;                     /* R 峰标记（S7） */
  * epoch 只用于"换文件/重播/清屏时把陈旧标记立即作废"。 */
 static uint32_t  s_peak_abs[APP_RPEAK_QUEUE_DEPTH];   /* 峰的全局绝对样本号 */
 static uint32_t  s_peak_n;
+static bool      s_rp_show = true;                    /* ★T216：R 峰打点显示开关（默认开） */
 static uint32_t  s_epoch;                       /* 已对齐到哪个 epoch（0 = 未对齐） */
 static uint32_t  s_pull_n;                      /* 本帧取走的样本数（诊断用） */
 static uint32_t  s_pulled_total;                /* 累计取走样本数（**永不重置**） */
@@ -501,7 +502,10 @@ static void sync_rpeaks(void)
 /* 在画布 1 上画 R 峰圆点（需求 §3.4：半径 2.6 px，峰上 10 px） */
 static void draw_rp_marks(uint16_t *b, const int32_t *disp, uint32_t wr, uint32_t cnt)
 {
-    if (s_peak_n == 0 || cnt < 2) {
+    /* ★T216：打点显示开关。**只影响绘制，不影响检测** ——
+     * 关掉后 BPM 照算，只是不在波形上画点（语义：打点是视觉叠加，不是算法开关）。
+     * 关掉的瞬间屏上旧点不会立刻消失，下一次整屏重绘（≤200 ms）就不再画。 */
+    if (!s_rp_show || s_peak_n == 0 || cnt < 2) {
         return;
     }
 
@@ -806,6 +810,27 @@ void ui_waveform_set_frozen(bool frozen)
 bool ui_waveform_is_frozen(void)
 {
     return s_frozen;
+}
+
+/* ★T216：R 峰打点显示开关（CLI `rpeak on|off`）。
+ * 🛑 只切绘制，不碰检测器 —— `sync_rpeaks()` 照常收峰、BPM 照常算。
+ * 关掉后旧点不会立刻消失，下一次整屏重绘（≤200 ms）就不画了；
+ * 重新打开时也只会画**当前可见窗口内**的峰（`draw_rp_marks()` 里按 `ago` 过滤，
+ * 窗口外的一律跳过）⇒ 不会冒出十几秒前的历史点。 */
+void ui_waveform_set_rp_show(bool on)
+{
+    if (s_rp_show == on) {
+        return;
+    }
+    s_rp_show = on;
+    ESP_LOGI(TAG, "rpeak marks -> %s（只停绘制，检测与 BPM 不变）", on ? "on" : "off");
+    /* 立刻重画一帧：否则「关掉」后旧点要等下一个刷新周期才消失 */
+    invalidate_canvas_excl_overlay(s_canvas[0], APP_CANVAS1_Y + CY0);
+}
+
+bool ui_waveform_get_rp_show(void)
+{
+    return s_rp_show;
 }
 
 void ui_waveform_clear(void)

@@ -52,6 +52,7 @@
 #include <sys/stat.h>
 
 #include "esp_console.h"
+#include "esp_heap_caps.h"      /* ★T216：mem 命令读内部 RAM / PSRAM 真实容量 */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -1238,6 +1239,77 @@ static int cmd_restart(int argc, char **argv)
     return 0;
 }
 
+/* ---- rpeak on|off：R 峰打点显示开关（★T216）----
+ *
+ * 🛑 这是 **ESP32 本地**开关，不是 `485-send` —— STM32 侧没有任何 R 峰代码
+ *   （全工程 grep `rpeak/RPEAK/R波` 零命中），R 峰是 ESP32 本地算的。
+ *   把它做成下行命令，STM32 收到也没有东西可执行。
+ *
+ * 语义：**只停绘制，不停检测**。关掉后 `sync_rpeaks()` 照收峰、BPM 照算，
+ * 只是不在波形上画圆点 —— 所以「关打点」不会让 BPM 变成 `--`。 */
+static int cmd_rpeak(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("R 峰打点：%s\n", ui_waveform_get_rp_show() ? "on" : "off");
+        printf("用法: rpeak on|off   （只停绘制，检测与 BPM 不变）\n");
+        return 0;
+    }
+
+    bool on;
+    if (strcasecmp(argv[1], "on") == 0) {
+        on = true;
+    } else if (strcasecmp(argv[1], "off") == 0) {
+        on = false;
+    } else {
+        printf("用法: rpeak on|off\n");
+        return 1;
+    }
+
+    /* 内部会失效画布并立刻重绘一帧 ⇒ 必须持 LVGL 锁 */
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        printf("拿不到 LVGL 锁，未执行\n");
+        return 1;
+    }
+    ui_waveform_set_rp_show(on);
+    esp_lv_adapter_unlock();
+
+    printf("R 峰打点 -> %s（检测与 BPM 不受影响）\n", on ? "on" : "off");
+    return 0;
+}
+
+/* ---- mem：内部 RAM / PSRAM 真实容量（★T216）----
+ *
+ * 为什么需要：`485-stat` 只打 `int_heap`（内部 RAM），PSRAM 一直没读数。
+ * 评估「把 32 KB 峰序列缓冲挪到 PSRAM」这类方案时，必须知道**可用堆**到底多少 ——
+ * 物理 8 MB ≠ 可用 8 MB：本工程开了 `SPIRAM_XIP_FROM_PSRAM` +
+ * `FETCH_INSTRUCTIONS` + `RODATA`，固件的一部分代码/常量常驻 PSRAM。
+ * 硬件实测（启动日志）：`octal_psram: density 0x03 (64 Mbit)` ⇒ 8 MB。 */
+static int cmd_mem(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    const size_t i_tot  = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    const size_t i_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t i_big  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t p_tot  = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const size_t p_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const size_t p_big  = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
+    printf("内部RAM  : 总 %lu KB   空闲 %lu KB   最大连续 %lu KB\n",
+           (unsigned long)(i_tot / 1024), (unsigned long)(i_free / 1024),
+           (unsigned long)(i_big / 1024));
+    if (p_tot == 0) {
+        printf("PSRAM    : ★未启用/未检测到（0 B）\n");
+    } else {
+        printf("PSRAM    : 总 %lu KB   空闲 %lu KB   最大连续 %lu KB\n",
+               (unsigned long)(p_tot / 1024), (unsigned long)(p_free / 1024),
+               (unsigned long)(p_big / 1024));
+        printf("           （物理 8 MB，差值＝XIP 代码/只读数据常驻部分）\n");
+    }
+    return 0;
+}
+
 /* ---- ui-clear：执行一次清屏（与屏上「清屏」键同一段，★T212）----
  *
  * 为什么需要它：清屏只能点屏 ⇒ 自动化验收（`_t211_clear_probe.py --trigger cli`）
@@ -1924,6 +1996,18 @@ static void register_commands(void)
             .help    = "执行一次清屏（与屏上「清屏」键同一段；T212 只清视觉）",
             .hint    = NULL,
             .func    = &cmd_ui_clear,
+        },
+        {
+            .command = "rpeak",
+            .help    = "R 峰打点显示开关（本地功能，非下行命令）",
+            .hint    = "on|off",
+            .func    = &cmd_rpeak,
+        },
+        {
+            .command = "mem",
+            .help    = "打印内部 RAM / PSRAM 的总量、空闲、最大连续块",
+            .hint    = NULL,
+            .func    = &cmd_mem,
         },
         /* ---- S9a：485 实时源 ---- */
         {
