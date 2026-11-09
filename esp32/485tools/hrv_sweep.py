@@ -178,8 +178,9 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False):
         return None
 
     path = os.path.join(OUT_DIR, "rpeak_hrv_%dbpm_%d.txt" % (bpm, idx_of(bpm, OUT_DIR) + 1))
+    # 🛑 串口 dump 是 CRLF（ESP-IDF 控制台格式），项目约定纯 LF ⇒ 落盘前统一
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(txt)
+        f.write(txt.replace("\r\n", "\n").replace("\r", "\n"))
     print("  ✓ 已存 %s（%d 峰）" % (os.path.basename(path), len(peaks)))
     return path
 
