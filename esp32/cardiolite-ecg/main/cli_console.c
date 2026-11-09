@@ -1247,13 +1247,15 @@ static int cmd_restart(int argc, char **argv)
  *
  *   rpeak                查询：打点开关 + 记录状态与剩余时间
  *   rpeak on|off         打点显示开关（**只停绘制，不停检测**，BPM 不受影响）
- *   rpeak rec            开始记录 QRS 峰序列，**固定 300 s（5 min）到点自动落盘**
+ *   rpeak rec [secs]     开始记录 QRS 峰序列；**secs 可选，默认 300，范围 30~600**
  *   rpeak rec off        提前终止并立即落盘
  *
- * 🛑 时长为什么固定 300 s、且不给参数：32 KB 缓冲在 300 bpm 下 5 min 只占 33%，
- *   10 min 占 64%，15 min 就贴到 98% 的边；而**溢出是静默截断**（只置
- *   `s_dump_overflow`，不报错）⇒ 开放任意时长等于给用户一个"看起来记了、其实丢了"
- *   的坑。要记更久必须先走 T215 §2.6 方案甲（缓冲挪 PSRAM）。
+ * 🛑 为什么要有上限 600 s：32 KB 缓冲在 300 bpm 下 600 s 用 21 KB（64%），
+ *   再长就贴近上限；而**溢出是静默截断**（只置 `s_dump_overflow`，不报错）
+ *   ⇒ 开放任意时长等于给用户一个"看起来记了、其实丢了"的坑。
+ *   要记更久必须先走 T215 §2.6 方案甲（缓冲挪 PSRAM）。
+ *   2026-11-09 修正：原本写死 300 s、不接受参数；因 HRV 扫频测试需要
+ *   180 s 一档而放开，30~600 是容量安全区。
  *
  * 🛑 打点是 **ESP32 本地**功能，不是 `485-send` —— STM32 侧全工程 grep
  *   `rpeak/RPEAK/R波` 零命中，R 峰是本地算的，做成下行命令那边也没人执行。
@@ -1264,8 +1266,10 @@ static int cmd_restart(int argc, char **argv)
  * 🛑 记录内容目前只有峰号（`P <相对号>`，16 峰/行），**不含峰处波形值** ⇒
  *   能算 RR 间期 / RMSSD / 抖动 σ，但**判不了"点是否正好落在峰顶"**。后者要改
  *   格式，会动到 `ecg_batch_eval.py` 等批处理口径，另行定（T215 §2.6）。 */
-#define RPEAK_REC_PATH   "/sdcard/rpeak_hrv.txt"
-#define RPEAK_REC_SECS   300u      /* 固定 5 min，见上面容量说明 */
+#define RPEAK_REC_PATH     "/sdcard/rpeak_hrv.txt"
+#define RPEAK_REC_SECS_DEF 300u    /* 默认 5 min，见上面容量说明 */
+#define RPEAK_REC_SECS_MIN 30u
+#define RPEAK_REC_SECS_MAX 600u    /* 300 bpm 下 21 KB / 64%，再长贴近静默截断线 */
 
 static volatile bool     s_rec_running = false;
 static volatile bool     s_rec_cancel  = false;
@@ -1275,8 +1279,8 @@ static volatile uint32_t s_rec_end_ms  = 0;
  * 🛑 不用 vTaskDelete 强杀 —— 杀在临界点会留下半截状态；用标志位让它自己退。 */
 static void rpeak_rec_worker(void *arg)
 {
-    (void)arg;
-    const uint32_t ticks = (RPEAK_REC_SECS * 1000u) / 100u;
+    const uint32_t secs  = (uint32_t)(uintptr_t)arg;
+    const uint32_t ticks = (secs * 1000u) / 100u;
 
     for (uint32_t i = 0; i < ticks; i++) {
         if (s_rec_cancel) {
@@ -1299,12 +1303,12 @@ static void rpeak_rec_worker(void *arg)
         printf("\n[rpeak rec] 已提前停止，落盘完成 -> %s\n", RPEAK_REC_PATH);
     } else {
         printf("\n[rpeak rec] ★ %u s 到点，已自动落盘 -> %s\n",
-               (unsigned)RPEAK_REC_SECS, RPEAK_REC_PATH);
+               (unsigned)secs, RPEAK_REC_PATH);
     }
     printf("            取回：result-dump rpeak_hrv.txt   分析：py hrv_analyze.py rpeak_hrv.txt\n");
 
     ESP_LOGI(TAG, "rpeak rec done (%u s, cancelled=%d) -> " RPEAK_REC_PATH,
-             (unsigned)RPEAK_REC_SECS, (int)cancelled);
+             (unsigned)secs, (int)cancelled);
     vTaskDelete(NULL);
 }
 
@@ -1321,7 +1325,7 @@ static int cmd_rpeak(int argc, char **argv)
         } else {
             printf("QRS 记录：off\n");
         }
-        printf("用法: rpeak on|off | rpeak rec | rpeak rec off\n");
+        printf("用法: rpeak on|off | rpeak rec [30~600 s] | rpeak rec off\n");
         return 0;
     }
 
@@ -1336,10 +1340,17 @@ static int cmd_rpeak(int argc, char **argv)
             printf("QRS 记录停止中，正在落盘…\n");
             return 0;
         }
+        /* 可选时长：30~600 s（容量安全区，见 RPEAK_REC_SECS_MAX 处的注释） */
+        uint32_t secs = RPEAK_REC_SECS_DEF;
         if (argc >= 3) {
-            printf("记录时长固定 %u s（5 min），不需要参数\n", (unsigned)RPEAK_REC_SECS);
-            printf("用法: rpeak rec     （开始）| rpeak rec off（提前停）\n");
-            return 1;
+            char *endp = NULL;
+            const long v = strtol(argv[2], &endp, 10);
+            if (endp == argv[2] || v < (long)RPEAK_REC_SECS_MIN || v > (long)RPEAK_REC_SECS_MAX) {
+                printf("时长不合法: %s（允许 %u~%u s）\n", argv[2],
+                       (unsigned)RPEAK_REC_SECS_MIN, (unsigned)RPEAK_REC_SECS_MAX);
+                return 1;
+            }
+            secs = (uint32_t)v;
         }
 
         if (!ecg_pipeline_src_is_rs485()) {
@@ -1351,10 +1362,9 @@ static int cmd_rpeak(int argc, char **argv)
             return 1;
         }
         if (s_rec_running) {
-            printf("已在记录中（剩 %lu s），先 `rpeak rec off`。\n",
-                   (unsigned long)((s_rec_end_ms > (uint32_t)(esp_timer_get_time() / 1000))
-                                   ? ((s_rec_end_ms - (uint32_t)(esp_timer_get_time() / 1000)) / 1000u)
-                                   : 0u));
+            const uint32_t now  = (uint32_t)(esp_timer_get_time() / 1000);
+            const uint32_t left = (s_rec_end_ms > now) ? ((s_rec_end_ms - now) / 1000u) : 0u;
+            printf("已在记录中（剩 %lu s），先 `rpeak rec off`。\n", (unsigned long)left);
             return 1;
         }
 
@@ -1365,17 +1375,17 @@ static int cmd_rpeak(int argc, char **argv)
 
         s_rec_cancel  = false;
         s_rec_running = true;
-        s_rec_end_ms  = (uint32_t)(esp_timer_get_time() / 1000) + RPEAK_REC_SECS * 1000u;
+        s_rec_end_ms  = (uint32_t)(esp_timer_get_time() / 1000) + secs * 1000u;
 
-        if (xTaskCreate(rpeak_rec_worker, "rpeak_rec", 3072, NULL, 2, NULL) != pdPASS) {
+        if (xTaskCreate(rpeak_rec_worker, "rpeak_rec", 3072,
+                        (void *)(uintptr_t)secs, 2, NULL) != pdPASS) {
             s_rec_running = false;
             s_rec_end_ms  = 0;
             ecg_pipeline_set_rpeak_dump(false);
             printf("创建记录任务失败（内存不足？）\n");
             return 1;
         }
-        printf("QRS 记录开始：%u s（5 min）-> %s\n",
-               (unsigned)RPEAK_REC_SECS, RPEAK_REC_PATH);
+        printf("QRS 记录开始：%u s -> %s\n", (unsigned)secs, RPEAK_REC_PATH);
         printf("  到点自动落盘；提前停用 `rpeak rec off`；回传 `result-dump rpeak_hrv.txt`\n");
         return 0;
     }
@@ -1387,7 +1397,7 @@ static int cmd_rpeak(int argc, char **argv)
     } else if (strcasecmp(argv[1], "off") == 0) {
         on = false;
     } else {
-        printf("用法: rpeak on|off | rpeak rec | rpeak rec off\n");
+        printf("用法: rpeak on|off | rpeak rec [30~600 s] | rpeak rec off\n");
         return 1;
     }
 
@@ -2126,7 +2136,7 @@ static void register_commands(void)
         {
             .command = "rpeak",
             .help    = "R 峰打点开关 / QRS 序列记录（本地功能，非下行命令）",
-            .hint    = "[on|off] | rec（300 s 固定） | rec off",
+            .hint    = "[on|off] | rec [30~600 s，默认 300] | rec off",
             .func    = &cmd_rpeak,
         },
         {
