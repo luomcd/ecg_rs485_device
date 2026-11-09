@@ -191,7 +191,7 @@ def dump_peaks(link, name="rpeak_hrv.txt", timeout=30.0):
 
 
 def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
-              remain_min=0.0, fs=500.0):
+              remain_min=0.0, fs=500.0, prevcheck=True):
     print()
     print("=" * 66)
     print("  第 %d/%d 轮    剩余约 %.0f 分钟    ★ 目标心率 %d bpm" % (idx, total, remain_min, bpm))
@@ -230,8 +230,12 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
             print("  ✓ 屏上 BPM=%.1f，与设定吻合（差 %.1f%%）" % (got, dev))
 
     # 记录前先记下 SD 上现有数据的末峰号，用于事后校验「取回的是不是本轮数据」
-    pre = dump_peaks(link)
-    pre_last = pre[-1] if pre else None
+    # ⚠ ESP32 复位后 s_push_seq 归零，峰号会小于旧文件 ⇒ 校验会误判，
+    #    这种情况用 --no-prevcheck 跳过（此时只能靠「记录正常结束」这一条判据）。
+    pre_last = None
+    if prevcheck:
+        pre = dump_peaks(link)
+        pre_last = pre[-1] if pre else None
 
     print("  ▶ rpeak rec %d" % secs, flush=True)
     link.send("rpeak rec %d" % secs)
@@ -389,6 +393,8 @@ def main():
     ap.add_argument("--secs", type=int, default=180, help="每次记录时长（固件允许 30~600）")
     ap.add_argument("--settle", type=int, default=15, help="切换心率后等待稳定秒数")
     ap.add_argument("--fs", type=float, default=500.0)
+    ap.add_argument("--no-prevcheck", action="store_true",
+                    help="跳过'取回数据必须新于记录前末峰'的校验（ESP32 复位后用）")
     a = ap.parse_args()
 
     bpms = [int(x) for x in a.bpms.split(",") if x.strip()]
@@ -425,7 +431,8 @@ def main():
                 n += 1
                 remain = (total - n + 1) * (a.secs + a.settle + 10) / 60.0
                 got = one_round(link, bpm, a.secs, a.settle, n, total,
-                                first_of_bpm=(rep == 0), remain_min=remain, fs=a.fs)
+                                first_of_bpm=(rep == 0), remain_min=remain, fs=a.fs,
+                                prevcheck=not a.no_prevcheck)
     except KeyboardInterrupt:
         print("\n\n  ⚠ 已中止。已完成的文件都在 %s" % OUT_DIR)
     finally:
