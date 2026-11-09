@@ -269,6 +269,31 @@ def idx_of(bpm, out_dir):
     return n
 
 
+def collect_all(fs=500.0):
+    """扫描 hrv_data 下所有 rpeak_hrv_{bpm}bpm_{n}.txt，返回 [(bpm, res, 文件名)]。
+
+    🛑 为什么不只用本次运行的 rows：扫频常常分几次跑（中断/分批），
+    只统计本次会让之前的心率点从汇总里消失。全量扫描才能一张表看全。
+    """
+    rows = []
+    if not os.path.isdir(OUT_DIR):
+        return rows
+    names = sorted(os.listdir(OUT_DIR))
+    pat = re.compile(r"rpeak_hrv_(\d+)bpm_(\d+)\.txt$")
+    for fn in names:
+        m = pat.match(fn)
+        if not m:
+            continue
+        bpm = int(m.group(1))
+        try:
+            with open(os.path.join(OUT_DIR, fn), encoding="utf-8") as f:
+                peaks = parse_peaks(f.read())
+            rows.append((bpm, analyze(peaks, fs, bpm), fn) if len(peaks) >= 8 else (bpm, None, fn))
+        except Exception:
+            rows.append((bpm, None, fn))
+    return rows
+
+
 def summarize(rows):
     """按 bpm 聚合出汇总表 + 写 summary.md。
 
@@ -276,7 +301,8 @@ def summarize(rows):
     这里给出均值与**极差**，极差大说明"退化"不稳定，见 T218 §7C.2。
     """
     by_bpm = {}
-    for bpm, r in rows:
+    for item in rows:
+        bpm, r = item[0], item[1]
         by_bpm.setdefault(bpm, []).append(r)
 
     lines = ["# HRV 扫频汇总（%s）\n" % time.strftime("%Y-%m-%d %H:%M"),
@@ -369,17 +395,18 @@ def main():
                 remain = (total - n + 1) * (a.secs + a.settle + 10) / 60.0
                 got = one_round(link, bpm, a.secs, a.settle, n, total,
                                 first_of_bpm=(rep == 0), remain_min=remain, fs=a.fs)
-                rows.append((bpm, got[1] if got else None))
     except KeyboardInterrupt:
         print("\n\n  ⚠ 已中止。已完成的文件都在 %s" % OUT_DIR)
     finally:
         link.close()
 
-    if rows:
-        print("\n" + "=" * 64)
-        print("  汇总（同一 bpm 可能有多行，最终以 summary.md 为准）")
-        print("=" * 64)
-        summarize(rows)
+    # ★ 全量汇总：扫目录，把之前分批跑的心率点也纳入
+    allrows = collect_all(a.fs)
+    if allrows:
+        print("\n" + "=" * 72)
+        print("  全量汇总（扫描 %s，含之前分批跑的数据）" % os.path.basename(OUT_DIR))
+        print("=" * 72)
+        summarize(allrows)
     return 0
 
 
