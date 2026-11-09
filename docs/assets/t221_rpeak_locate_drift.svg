@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 330" width="100%" role="img">
+<title>90 bpm 单拍落点漂移到下降支的波形证据</title>
+<desc>上图：每一拍都检到了（峰数 270，反算 90.4 bpm，零漏检），但第 3 拍的落点比真峰顶晚 9 个样本、即 18 毫秒，使相邻 RR 变成 342 与 324。下图：正常峰的 7 点原始波形呈尖峰，检测点落在峰顶；漂移拍的 7 点原始波形单调下降，说明落点跑到了 R 波下降支上。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<text x="40" y="24" font-size="14" font-weight="500" fill="#2C2C2A">检出峰的位置（90 bpm，理论 RR = 333 样本，峰数 270 零漏检）</text>
+
+<line x1="60" y1="76" x2="628" y2="76" stroke="#B4B2A9" stroke-width="0.5"/>
+
+<circle cx="95" cy="76" r="6" fill="#3B6D11"/>
+<text x="95" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R1</text>
+
+<circle cx="215" cy="76" r="6" fill="#3B6D11"/>
+<text x="215" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R2</text>
+
+<circle cx="335" cy="76" r="6" fill="none" stroke="#888780" stroke-width="1.5" stroke-dasharray="2 2"/>
+<text x="330" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">真峰 R3 应在位</text>
+
+<line x1="343" y1="76" x2="364" y2="76" stroke="#A32D2D" stroke-width="0.8" marker-end="url(#arrow)"/>
+
+<circle cx="372" cy="76" r="6" fill="#A32D2D"/>
+
+<circle cx="492" cy="76" r="6" fill="#3B6D11"/>
+<text x="492" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R4</text>
+
+<text x="372" y="104" font-size="12" text-anchor="middle" fill="#A32D2D">落点晚 9 样本 = 18 ms</text>
+
+<line x1="101" y1="130" x2="209" y2="130" stroke="#888780" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="155" y="146" font-size="12" text-anchor="middle" fill="#5F5E5A">333</text>
+
+<line x1="221" y1="130" x2="366" y2="130" stroke="#A32D2D" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="293" y="146" font-size="12" text-anchor="middle" fill="#A32D2D">342</text>
+
+<line x1="378" y1="130" x2="486" y2="130" stroke="#A32D2D" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="432" y="146" font-size="12" text-anchor="middle" fill="#A32D2D">324</text>
+
+<text x="40" y="180" font-size="14" font-weight="500" fill="#2C2C2A">峰处 ±3 样本的原始波形（CH1 原始码）</text>
+
+<text x="170" y="202" font-size="12" text-anchor="middle" fill="#5F5E5A">正常拍 R2</text>
+<line x1="60" y1="292" x2="300" y2="292" stroke="#B4B2A9" stroke-width="0.5"/>
+<line x1="175" y1="292" x2="175" y2="210" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="2 2"/>
+<polyline points="70,283 105,234 140,194 175,186 210,213 245,245 280,292" fill="none" stroke="#3B6D11" stroke-width="1.5"/>
+<circle cx="175" cy="186" r="3" fill="#3B6D11"/>
+<text x="175" y="310" font-size="12" text-anchor="middle" fill="#5F5E5A">落点在峰顶</text>
+
+<text x="495" y="202" font-size="12" text-anchor="middle" fill="#A32D2D">漂移拍 R3</text>
+<line x1="380" y1="292" x2="620" y2="292" stroke="#B4B2A9" stroke-width="0.5"/>
+<line x1="495" y1="292" x2="495" y2="210" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="2 2"/>
+<polyline points="390,186 425,204 460,225 495,248 530,265 565,276 600,292" fill="none" stroke="#A32D2D" stroke-width="1.5"/>
+<circle cx="495" cy="248" r="3" fill="#A32D2D"/>
+<text x="495" y="310" font-size="12" text-anchor="middle" fill="#A32D2D">单调下降，落点不在峰顶</text>
+</svg>
