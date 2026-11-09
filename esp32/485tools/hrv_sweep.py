@@ -122,47 +122,55 @@ def read_bpm(link):
     return float(m.group(1)) if m else None
 
 
-def query_state(link, timeout=3.0):
-    """查记录状态：返回 (running, remain_s) / None=板子无响应。
+def query_state(link, timeout=4.0, retries=3):
+    """查记录状态：返回 (running, remain_s) / None=连续多次无响应。
 
-    🛑 为什么不再等 `[rpeak rec]` 那行 printf：2026-11-09 实测第 3 轮卡死
-       400+ s 没退。根因是 `read_until` 只靠"匹配到某行"或"时间到"退出，
-       一旦 `p.read()` 阻塞（USB-CDC 异常/SD 写卡住），时间判定永远轮不到。
-       改成**主动查状态**：每 5 s 问一次 `rpeak`，板子活着就一定答，答不上来
-       立刻能判定"无响应"，不会无限等。
+    🛑 一次超时不能判死：2026-11-09 第 1 轮 90 bpm 在 133 s 处单次查询超时，
+       脚本直接判"板子无响应"，但实际只是短暂通信中断（随后 result-dump 又通了）。
+       改成连续 retries 次都失败才算无响应。
     """
-    try:
-        link.send("rpeak")
-        ok, txt = link.read_until(rb"QRS", timeout, quiet=0.5)
-    except Exception:
-        return None
-    if not ok:
-        return None
-    if "QRS 记录：on" in txt:
-        m = re.search(r"剩 (\d+) s", txt)
-        return (True, int(m.group(1)) if m else -1)
-    return (False, 0)
+    for i in range(retries):
+        try:
+            link.send("rpeak")
+            ok, txt = link.read_until(rb"QRS", timeout, quiet=0.6)
+        except Exception:
+            ok, txt = False, ""
+        if ok:
+            if "QRS 记录：on" in txt:
+                m = re.search(r"剩 (\d+) s", txt)
+                return (True, int(m.group(1)) if m else -1)
+            return (False, 0)
+        time.sleep(0.6)
+    return None
 
 
 def wait_record_done(link, secs):
-    """轮询到记录结束，带进度条。返回 True=正常结束。"""
+    """轮询到记录结束，带进度条。True=正常结束，False=异常（本轮必须作废）。"""
     t0 = time.time()
     bar_n = 30
-    first = True
+    seen_running = False
+    miss = 0
     while True:
         st = query_state(link)
         el = time.time() - t0
         if st is None:
-            print("\n  ⚠ 板子无响应（`rpeak` 查询超时）—— 可能 USB 掉了或固件卡死")
-            return False
+            miss += 1
+            # 连续 3 次整体查询失败（每次内部还重试 3 次）才判死
+            if miss >= 3:
+                print("\n  ⚠ 板子连续无响应 —— USB 掉了或固件卡死")
+                return False
+            print("\n  ⚠ 查询超时（%d/3），继续重试…" % miss)
+            time.sleep(2)
+            continue
+        miss = 0
         running, remain = st
         if not running:
-            if first:
+            if not seen_running:
                 print("\n  ⚠ 记录未启动成功（`rpeak` 报 off）")
                 return False
-            print()          # 换行，别粘在进度条后面
+            print()
             return True
-        first = False
+        seen_running = True
         done = secs - remain if remain >= 0 else int(el)
         done = max(0, min(secs, done))
         k = int(bar_n * done / float(secs))
@@ -172,6 +180,14 @@ def wait_record_done(link, secs):
             print("\n  ⚠ 超过 %d s 仍未结束（板子可能卡在 SD 写）" % (secs + 120))
             return False
         time.sleep(5)
+
+
+def dump_peaks(link, name="rpeak_hrv.txt", timeout=30.0):
+    """result-dump 一次并解析峰号（文件不存在则返回空表）。"""
+    link.send("result-dump %s" % name)
+    # 同时匹配「正常结束」与「找不到」
+    ok, txt = link.read_until(rb"# ---- END|\xe6\x89\xbe\xe4\xb8\x8d\xe5\x88\xb0", timeout, quiet=1.0)
+    return parse_peaks(txt)
 
 
 def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
@@ -213,6 +229,10 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
         else:
             print("  ✓ 屏上 BPM=%.1f，与设定吻合（差 %.1f%%）" % (got, dev))
 
+    # 记录前先记下 SD 上现有数据的末峰号，用于事后校验「取回的是不是本轮数据」
+    pre = dump_peaks(link)
+    pre_last = pre[-1] if pre else None
+
     print("  ▶ rpeak rec %d" % secs, flush=True)
     link.send("rpeak rec %d" % secs)
     time.sleep(3.0)
@@ -224,7 +244,12 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
         print("  ✗ 记录没启动（`rpeak` 报 off）—— 可能上一轮还没退干净，或 SD 未挂载")
         return None
 
-    wait_record_done(link, secs)
+    # 🛑 必须检查返回值：2026-11-09 第 1 轮 90 bpm 在 133 s 查询超时，旧代码不管
+    #   返回值直接 dump，把**上一轮的旧文件**存成了 90bpm_1（179 峰 + σ 与 60bpm_3
+    #   完全相同，是同一份数据）。现在异常直接作废，不取数。
+    if not wait_record_done(link, secs):
+        print("  ✗ 本轮作废（记录未正常结束，不取数、不存盘）")
+        return None
     time.sleep(1.5)
     link.send("result-dump rpeak_hrv.txt")
     ok, txt = link.read_until(rb"# ---- END", 30.0, quiet=1.0)
@@ -235,6 +260,12 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
     peaks = parse_peaks(txt)
     if len(peaks) < 10:
         print("  ✗ 只解析到 %d 个峰，数据异常" % len(peaks))
+        return None
+
+    # ★ 防呆：本轮数据的首峰必须晚于记录前那份的末峰，否则取回的是旧文件
+    if pre_last is not None and peaks[0] <= pre_last:
+        print("  ✗ 取回的是旧数据（首峰 %d ≤ 记录前末峰 %d）⇒ 本轮没落盘，作废" %
+              (peaks[0], pre_last))
         return None
 
     path = os.path.join(OUT_DIR, "rpeak_hrv_%dbpm_%d.txt" % (bpm, idx_of(bpm, OUT_DIR) + 1))
