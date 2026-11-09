@@ -67,7 +67,11 @@ class Link:
         self.p.flush()
 
     def read_until(self, pattern, timeout, quiet=0.0):
-        """读到匹配 pattern（bytes 正则）或超时；返回 (matched, text)。"""
+        """读到匹配 pattern（bytes 正则）或超时；返回 (matched, text)。
+
+        🛑 正则必须在**字节缓冲**上匹配：pattern 全是 rb"..."，若拿解码后的 str
+           去 re.search 会报 "cannot use a bytes pattern on a string-like object"。
+        """
         buf = b""
         t_end = time.time() + timeout
         last = time.time()
@@ -79,8 +83,7 @@ class Link:
             elif quiet and (time.time() - last) > quiet:
                 break
             time.sleep(0.05)
-        txt = buf.decode("utf-8", "replace")
-        return (re.search(pattern, txt) is not None), txt
+        return (re.search(pattern, buf) is not None), buf.decode("utf-8", "replace")
 
     def close(self):
         try:
