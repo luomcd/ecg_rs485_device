@@ -119,12 +119,21 @@ def read_bpm(link):
     return float(m.group(1)) if m else None
 
 
-def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False):
+def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
+              remain_min=0.0, fs=500.0):
     print()
-    print("=" * 64)
-    print("  [%d/%d]  %d bpm" % (idx, total, bpm))
-    print("=" * 64)
-    input("  ★ 请把 AECG100 设为 %d bpm，确认后按回车 … " % bpm)
+    print("=" * 66)
+    print("  第 %d/%d 轮    剩余约 %.0f 分钟    ★ 目标心率 %d bpm" % (idx, total, remain_min, bpm))
+    print("=" * 66)
+    while True:
+        r = input("  ★ 请把 AECG100 设为 %d bpm，好了按回车（s=跳过此轮 r=重新提示）… " % bpm)
+        r = r.strip().lower()
+        if r == "s":
+            print("  → 已跳过本轮")
+            return None
+        if r == "r":
+            continue          # 重新提示，什么都不做
+        break                 # 空回车 = 开始
 
     print("  ⏳ 等待 %d s 让信号与检测器收敛 …" % settle, flush=True)
     time.sleep(settle)
@@ -181,8 +190,21 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False):
     # 🛑 串口 dump 是 CRLF（ESP-IDF 控制台格式），项目约定纯 LF ⇒ 落盘前统一
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(txt.replace("\r\n", "\n").replace("\r", "\n"))
+
+    # ---- 本轮即时反馈：不用等我，当场就知道质量 ----
+    res = analyze(peaks, fs, bpm)
+    if "error" in res:
+        print("  ✓ 已存 %s（%d 峰）" % (os.path.basename(path), len(peaks)))
+        print("     ⚠ %s" % res["error"])
+        return path, None
+
+    s = res["sigma_e"]
+    verdict = "PASS" if s <= 0.5 else ("WARN" if s <= 1.0 else "FAIL")
     print("  ✓ 已存 %s（%d 峰）" % (os.path.basename(path), len(peaks)))
-    return path
+    print("     σ(e)=%.2f 样本 (%.1f ms)   异常率 %.2f%%   多检 %d / 漏检 %d   ⇒ %s" % (
+        s, s / fs * 1000.0, res["anom_rate"] * 100,
+        len(res["extra"]), len(res["missed"]), verdict))
+    return path, res
 
 
 def idx_of(bpm, out_dir):
@@ -285,14 +307,10 @@ def main():
         for bpm in bpms:
             for rep in range(a.repeat):
                 n += 1
-                path = one_round(link, bpm, a.secs, a.settle, n, total,
-                                 first_of_bpm=(rep == 0))
-                if path:
-                    with open(path, encoding="utf-8") as f:
-                        peaks = parse_peaks(f.read())
-                    rows.append((bpm, analyze(peaks, a.fs, bpm)))
-                else:
-                    rows.append((bpm, None))
+                remain = (total - n + 1) * (a.secs + a.settle + 10) / 60.0
+                got = one_round(link, bpm, a.secs, a.settle, n, total,
+                                first_of_bpm=(rep == 0), remain_min=remain, fs=a.fs)
+                rows.append((bpm, got[1] if got else None))
     except KeyboardInterrupt:
         print("\n\n  ⚠ 已中止。已完成的文件都在 %s" % OUT_DIR)
     finally:
