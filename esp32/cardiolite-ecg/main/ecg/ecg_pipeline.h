@@ -199,6 +199,23 @@ void ecg_pipeline_set_speed(int speed);
  *
  * @note 换文件 / 重播会清空缓冲（上一段结果作废）。
  */
+/**
+ * @brief ★P2d：切换峰序列的落盘格式。
+ *
+ * - `false`（默认，compact）：`P <峰号> <峰号> ...`，16 峰/行，每峰约 7 B。
+ *   这是 mit-run 批处理与 `hrv_analyze.py` 一直吃的格式，**不要改**。
+ * - `true`（wide）：`W <峰号> v[-3] v[-2] v[-1] v[0] v[+1] v[+2] v[+3]`，一峰一行。
+ *   v[k] 是该峰**前后第 k 个原始样本**（CH1 原始码，k=0 = 检测器认定的峰位置）。
+ *   用途：判断"检测点到底落在 R 顶 / 上升支 / S 波"，这是定位抖动归因的唯一手段。
+ *
+ * ⚠ 容量：wide 每峰约 58 B。PSRAM 256 KB ⇒ 约 4500 峰（210 bpm 下 ≈7 min）；
+ *   若 PSRAM 分配失败降级到内部 32 KB ⇒ 只够约 550 峰（210 bpm 约 90 s）。
+ */
+void ecg_pipeline_set_dump_wide(bool on);
+
+/** @brief 当前落盘格式（true=wide）。 */
+bool ecg_pipeline_get_dump_wide(void);
+
 void ecg_pipeline_set_dump_file(const char *path);
 
 /**

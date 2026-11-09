@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 330" width="100%" role="img">
+<title>90 bpm 漏检与斜坡误检的波形证据</title>
+<desc>上图：R1、R2 正常，R3 未被接受，在 R3 之后 9 个样本处接受了一个峰 R3'，使相邻 RR 变成 342 与 324。下图：正常峰的 7 点原始波形呈尖峰；误检点的 7 点原始波形单调下降，说明该处不是 R 波峰顶。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<text x="40" y="24" font-size="14" font-weight="500" fill="#2C2C2A">检出的峰位置（90 bpm，理论 RR = 333 样本）</text>
+
+<line x1="60" y1="76" x2="628" y2="76" stroke="#B4B2A9" stroke-width="0.5"/>
+
+<circle cx="95" cy="76" r="6" fill="#3B6D11"/>
+<text x="95" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R1</text>
+
+<circle cx="215" cy="76" r="6" fill="#3B6D11"/>
+<text x="215" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R2</text>
+
+<circle cx="335" cy="76" r="6" fill="none" stroke="#888780" stroke-width="1.5" stroke-dasharray="2 2"/>
+<text x="335" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R3 未被接受</text>
+
+<circle cx="372" cy="76" r="6" fill="#A32D2D"/>
+<text x="372" y="102" font-size="12" text-anchor="middle" fill="#A32D2D">R3' +9</text>
+
+<circle cx="492" cy="76" r="6" fill="#3B6D11"/>
+<text x="492" y="62" font-size="12" text-anchor="middle" fill="#5F5E5A">R4</text>
+
+<line x1="101" y1="124" x2="209" y2="124" stroke="#888780" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="155" y="140" font-size="12" text-anchor="middle" fill="#5F5E5A">333</text>
+
+<line x1="221" y1="124" x2="366" y2="124" stroke="#A32D2D" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="293" y="140" font-size="12" text-anchor="middle" fill="#A32D2D">342</text>
+
+<line x1="378" y1="124" x2="486" y2="124" stroke="#A32D2D" stroke-width="0.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="432" y="140" font-size="12" text-anchor="middle" fill="#A32D2D">324</text>
+
+<text x="40" y="176" font-size="14" font-weight="500" fill="#2C2C2A">峰处 ±3 样本的原始波形（CH1 原始码）</text>
+
+<text x="170" y="198" font-size="12" text-anchor="middle" fill="#5F5E5A">正常拍 R2</text>
+<line x1="60" y1="290" x2="300" y2="290" stroke="#B4B2A9" stroke-width="0.5"/>
+<line x1="175" y1="290" x2="175" y2="206" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="2 2"/>
+<polyline points="70,281 105,232 140,192 175,184 210,211 245,243 280,290" fill="none" stroke="#3B6D11" stroke-width="1.5"/>
+<circle cx="175" cy="184" r="3" fill="#3B6D11"/>
+<text x="175" y="308" font-size="12" text-anchor="middle" fill="#5F5E5A">检测点落在峰顶</text>
+
+<text x="495" y="198" font-size="12" text-anchor="middle" fill="#A32D2D">误检拍 R3'</text>
+<line x1="380" y1="290" x2="620" y2="290" stroke="#B4B2A9" stroke-width="0.5"/>
+<line x1="495" y1="290" x2="495" y2="206" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="2 2"/>
+<polyline points="390,184 425,202 460,223 495,246 530,263 565,274 600,290" fill="none" stroke="#A32D2D" stroke-width="1.5"/>
+<circle cx="495" cy="246" r="3" fill="#A32D2D"/>
+<text x="495" y="308" font-size="12" text-anchor="middle" fill="#A32D2D">单调下降，无局部极大</text>
+</svg>

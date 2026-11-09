@@ -1325,7 +1325,32 @@ static int cmd_rpeak(int argc, char **argv)
         } else {
             printf("QRS 记录：off\n");
         }
-        printf("用法: rpeak on|off | rpeak rec [30~600 s] | rpeak rec off\n");
+        printf("峰序列格式：%s\n", ecg_pipeline_get_dump_wide() ? "wide（峰+±3 邻域）" : "compact（仅峰号）");
+        printf("用法: rpeak on|off | rpeak wide on|off | rpeak rec [30~600 s] | rpeak rec off\n");
+        return 0;
+    }
+
+    /* ---- rpeak wide on|off（★P2d）---- */
+    if (strcasecmp(argv[1], "wide") == 0) {
+        if (argc < 3) {
+            printf("当前峰序列格式：%s\n",
+                   ecg_pipeline_get_dump_wide() ? "wide（峰 + ±3 邻域原始样本）"
+                                                : "compact（16 峰/行，仅峰号）");
+            printf("用法: rpeak wide on|off\n");
+            return 0;
+        }
+        bool won;
+        if (strcasecmp(argv[2], "on") == 0) {
+            won = true;
+        } else if (strcasecmp(argv[2], "off") == 0) {
+            won = false;
+        } else {
+            printf("用法: rpeak wide on|off\n");
+            return 1;
+        }
+        ecg_pipeline_set_dump_wide(won);
+        printf("峰序列格式 -> %s\n", won ? "wide（每峰约 58 B，需 PSRAM）"
+                                        : "compact（每峰约 7 B）");
         return 0;
     }
 
@@ -2136,7 +2161,7 @@ static void register_commands(void)
         {
             .command = "rpeak",
             .help    = "R 峰打点开关 / QRS 序列记录（本地功能，非下行命令）",
-            .hint    = "[on|off] | rec [30~600 s，默认 300] | rec off",
+            .hint    = "[on|off] | wide on|off | rec [30~600 s，默认 300] | rec off",
             .func    = &cmd_rpeak,
         },
         {

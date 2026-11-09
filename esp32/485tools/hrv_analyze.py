@@ -84,27 +84,36 @@ RR_HIGH_RATIO = 1.40   # RR > 1.40·T ⇒ 疑似漏检（丢一个 QRS）
 
 
 def parse_peaks(text):
-    """从文本里抽峰序号。兼容 result-dump 的行/提示符混排。"""
+    """从文本里抽峰序号。兼容两种格式与 result-dump 的提示符混排。
+
+    紧凑：`P 12345 12346 ...`（16 峰/行）
+    宽格式：`W 12345 -45 -30 -20 500 480 300 100`（一峰一行，第 1 个数是峰号）
+    """
     peaks = []
     for line in text.splitlines():
         s = line.strip()
-        i = s.find("P ")
-        if i < 0:
-            continue
-        # 允许行首是 `cardiolite> ` 之类的提示符
-        prefix = s[:i].strip()
-        if prefix and not prefix.endswith(">"):
-            continue
-        vals = []
-        ok = True
-        for tok in s[i + 2:].split():
-            if tok.isdigit():
-                vals.append(int(tok))
-            else:
-                ok = False
+        for tag in ("W ", "P "):
+            i = s.find(tag)
+            if i < 0:
+                continue
+            # 允许行首是 `cardiolite> ` 之类的提示符
+            prefix = s[:i].strip()
+            if prefix and not prefix.endswith(">"):
+                continue
+            toks = s[i + 2:].split()
+            if not toks:
                 break
-        if ok and vals:
-            peaks.extend(vals)
+            if tag == "W ":
+                # 宽格式：只取第 1 个字段（峰号），邻域值含负号不参与
+                if toks[0].isdigit():
+                    peaks.append(int(toks[0]))
+            else:
+                for tok in toks:
+                    if tok.isdigit():
+                        peaks.append(int(tok))
+                    else:
+                        break
+            break
     return peaks
 
 

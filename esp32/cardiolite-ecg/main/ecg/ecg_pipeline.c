@@ -127,8 +127,20 @@ static char               s_dump_name[64] = "";
  *
  * 为什么不像 S2 那样逐行 file_out：批处理是全速离线跑（无节拍约束），这里不是。
  * 容量：单条 MIT 最多约 3000 峰 × 6 B ≈ 18 KB，32 KB 有充分余量；满了只置溢出标志。 */
-#define DUMP_BUF_SIZE   (32 * 1024)
-static char   s_dump_buf[DUMP_BUF_SIZE];
+/* ★P2d（2026-11-09）：缓冲从静态 32 KB 内部 RAM 改到 **PSRAM 256 KB**，懒分配 + 降级。
+ *
+ * 为什么必须扩：加"峰处邻域值"后每峰约 58 B（峰号 + 7 个 int16），
+ *   210 bpm × 180 s = 630 峰 ⇒ 36.5 KB，**32 KB 内部缓冲必爆**，而溢出是静默截断。
+ *   256 KB ⇒ 约 4500 峰，210 bpm 下 ≈ 7 分钟，任何单次记录都够。
+ *
+ * 顺带收益：把 32 KB 内部 RAM 还回去（`mem` 实测内部只剩 89 KB / 最大连续 40 KB）。
+ * 降级策略：PSRAM 分配失败 ⇒ 退回内部 32 KB + 打警告，功能不中断（只是宽格式记不长）。
+ * 🛑 静态数组不能直接放 PSRAM（`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY` 是关的）
+ *   ⇒ 必须运行时 `heap_caps_malloc`。 */
+#define DUMP_BUF_PSRAM    (256u * 1024u)
+#define DUMP_BUF_FALLBACK (32u * 1024u)
+static char  *s_dump_buf  = NULL;
+static size_t s_dump_cap  = 0;
 static size_t s_dump_fill     = 0;
 static bool   s_dump_overflow = false;
 static char   s_dump_path[80] = "";
@@ -182,25 +194,128 @@ static void dump_line_reset(void)
     s_dump_line[0] = '\0';
 }
 
+/** 懒分配落盘缓冲（首次需要时调；失败返回 false，调用方应放弃记录） */
+static bool dump_buf_ensure(void)
+{
+    if (s_dump_buf != NULL) {
+        return true;
+    }
+    s_dump_buf = heap_caps_malloc(DUMP_BUF_PSRAM, MALLOC_CAP_SPIRAM);
+    if (s_dump_buf != NULL) {
+        s_dump_cap = DUMP_BUF_PSRAM;
+        ESP_LOGI(TAG, "dump buf -> PSRAM %u KB", (unsigned)(s_dump_cap / 1024));
+        return true;
+    }
+    s_dump_buf = heap_caps_malloc(DUMP_BUF_FALLBACK, MALLOC_CAP_INTERNAL);
+    if (s_dump_buf != NULL) {
+        s_dump_cap = DUMP_BUF_FALLBACK;
+        ESP_LOGW(TAG, "dump buf -> 内部 RAM %u KB（PSRAM 分配失败，宽格式记不长）",
+                 (unsigned)(s_dump_cap / 1024));
+        return true;
+    }
+    s_dump_cap = 0;
+    ESP_LOGE(TAG, "dump buf 分配失败（PSRAM 与内部 RAM 都没有）");
+    return false;
+}
+
+/* ★P2d（2026-11-09）：原始样本历史环 —— 给"峰处邻域值"用。
+ *
+ * 检测是**回溯**的：检测到峰时，执行点已经越过峰 `back` 个样本
+ * （back = 积分窗 ~60 + 定位搜索 ±40），所以必须把最近的原始样本留住才能取邻域。
+ * 长度 128 ≥ 60+40 的余量；int32 与 push_sample 的入参同类型（v1 来自 int16 解码）。 */
+#define WIDE_HALF      3      /* 记 ±3 共 7 点：够判"落在 R 顶 / 上升支 / S 波" */
+#define RAW_HIST_LEN   512    /* 实测部分拍的 back 会远超 128（偶发大幅回溯）⇒ 加够 */
+static int32_t  s_raw_hist[RAW_HIST_LEN];
+static uint32_t s_raw_pos = 0;
+static volatile bool s_dump_wide = false;   /* wide 格式开关（CLI `rpeak wide`） */
+
+static void raw_hist_push(int32_t v)
+{
+    s_raw_hist[s_raw_pos] = v;
+    s_raw_pos = (s_raw_pos + 1u) % (uint32_t)RAW_HIST_LEN;
+}
+
+/** 取"往回 off 个样本"的原始值（off=0 = 刚推入的那个） */
+static int32_t raw_hist_get(int off)
+{
+    if (off < 0 || off >= RAW_HIST_LEN) {
+        return 0;
+    }
+    const uint32_t idx = (s_raw_pos + (uint32_t)RAW_HIST_LEN - 1u - (uint32_t)off)
+                         % (uint32_t)RAW_HIST_LEN;
+    return s_raw_hist[idx];
+}
+
+/* ★P2d 挂起队列：宽格式必须**延迟输出**。
+ *
+ * 实测（2026-11-09）：检测器几乎实时判定，`back = fed-1-pk` 只有约 2 个样本
+ * （不是原先以为的积分窗 60 + 定位 40）。而宽格式要记"峰**之后** 3 个样本"，
+ * 那一刻它们还没被采集 ⇒ off = back-3 < 0 ⇒ 全 0。
+ * 修法：检出时先挂起，每个样本把 back 推进 1，够 WIDE_HALF 再真正写行。
+ * 这样 7 个点全部落在已采集的样本上。
+ * ⚠ RR 最短 142 样本 ≫ WIDE_HALF，不会出现"两拍同时挂起"；仍做防御。 */
+static bool     s_pend_valid = false;
+static uint32_t s_pend_rel   = 0;
+static int      s_pend_back  = 0;
+
+static void dump_buf_append(const char *fmt, ...);   /* 前向声明：dump_peak_wide 先用到 */
+
+/** 真正写一条 W 行（调用前保证 back ≥ WIDE_HALF 且 back+WIDE_HALF < RAW_HIST_LEN） */
+static void dump_peak_wide(uint32_t rel, int back)
+{
+    char line[160];
+    if (back + WIDE_HALF >= RAW_HIST_LEN) {
+        dump_buf_append("W %u ERR back=%d\n", (unsigned)rel, back);
+        return;
+    }
+    int n = snprintf(line, sizeof(line), "W %u", (unsigned)rel);
+    for (int k = -WIDE_HALF; k <= WIDE_HALF; k++) {
+        if (n <= 0 || n >= (int)sizeof(line)) {
+            break;
+        }
+        /* k=-3 是更早（峰前）⇒ off 更大 */
+        const int32_t v = raw_hist_get(back - k);
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " %ld", (long)v);
+    }
+    dump_buf_append("%s\n", line);
+}
+
+/** 每个样本推入后调：推进挂起的宽格式峰，够数就落一行 */
+static void dump_wide_tick(void)
+{
+    if (!s_pend_valid) {
+        return;
+    }
+    s_pend_back++;
+    if (s_pend_back >= WIDE_HALF) {
+        dump_peak_wide(s_pend_rel, s_pend_back);
+        s_pend_valid = false;
+    }
+}
+
 /** 往落盘缓冲追加（满了只置溢出标志，绝不越界；未设文件路径时直接跳过） */
 static void dump_buf_append(const char *fmt, ...)
 {
     if (s_dump_path[0] == '\0') {
         return;
     }
-    if (s_dump_fill + 1 >= DUMP_BUF_SIZE) {
+    if (s_dump_buf == NULL && !dump_buf_ensure()) {
+        s_dump_overflow = true;
+        return;
+    }
+    if (s_dump_fill + 1 >= s_dump_cap) {
         s_dump_overflow = true;
         return;
     }
     va_list ap;
     va_start(ap, fmt);
     const int n = vsnprintf(s_dump_buf + s_dump_fill,
-                            DUMP_BUF_SIZE - s_dump_fill, fmt, ap);
+                            s_dump_cap - s_dump_fill, fmt, ap);
     va_end(ap);
     if (n > 0) {
         s_dump_fill += (size_t)n;
-        if (s_dump_fill >= DUMP_BUF_SIZE) {
-            s_dump_fill    = DUMP_BUF_SIZE - 1;
+        if (s_dump_fill >= s_dump_cap) {
+            s_dump_fill    = s_dump_cap - 1;
             s_dump_overflow = true;
         }
     }
@@ -215,6 +330,9 @@ static void dump_buf_flush_to_file(void)
     if (s_dump_fill == 0) {
         /* 🛑 空缓冲不许开文件：`fopen(...,"w")` 会把已有文件截成 0 字节。
          * 典型场景：FILE 源 EOF 已落盘 ⇒ 之后实时记录任务又 flush 一次 ⇒ 内容全没了。 */
+        return;
+    }
+    if (s_dump_buf == NULL) {
         return;
     }
     FILE *f = fopen(s_dump_path, "w");
@@ -244,9 +362,26 @@ static void dump_line_flush(void)
     dump_line_reset();
 }
 
-/** 追加一个峰的文件内相对号；满 16 个自动成行 */
-static void dump_peak(uint32_t rel)
+/** 追加一个峰；满 16 个自动成行。wide 时改成一峰一行 + 峰处 ±WIDE_HALF 原始样本 */
+static void dump_peak(uint32_t rel, int back)
 {
+    if (s_dump_wide) {
+        /* ★P2d：宽格式。⚠ **必须延迟输出**：检出时 back 只有约 2 个样本，
+         *   峰后 3 个样本尚未采集 ⇒ 先挂起，由 dump_wide_tick() 推进够数再写。 */
+        if (s_pend_valid) {
+            dump_peak_wide(s_pend_rel, s_pend_back);   /* 防御：正常不会同时挂两拍 */
+            s_pend_valid = false;
+        }
+        if (back >= WIDE_HALF) {
+            dump_peak_wide(rel, back);
+        } else {
+            s_pend_rel   = rel;
+            s_pend_back  = back;
+            s_pend_valid = true;
+        }
+        return;
+    }
+
     const size_t cap = sizeof(s_dump_line);
     int n;
     if (s_dump_cnt == 0) {
@@ -332,6 +467,7 @@ static void push_sample(int32_t v1, int32_t v2)
      * 与「UI 取到的样本序号」两边同步跳过同一个样本，索引始终等价，
      * 不会因为丢了几个样本就让 R 峰标记越画越偏。 */
     if (ecg_ring_push(&s_ring, v1, v2)) {
+        raw_hist_push(v1);              /* ★P2d：留住原始样本，供峰处邻域取用 */
         const uint32_t newest_global = s_push_seq;
         s_push_seq = newest_global + 1u;
 
@@ -354,8 +490,11 @@ static void push_sample(int32_t v1, int32_t v2)
             s_file_peaks++;
             if (s_rp_dump) {
                 const uint32_t base = s_file_base_seq;
-                dump_peak((abs_idx >= base) ? (abs_idx - base) : 0u);
+                dump_peak((abs_idx >= base) ? (abs_idx - base) : 0u, (int)back);
             }
+        }
+        if (s_rp_dump) {
+            dump_wide_tick();          /* ★P2d：推进挂起的宽格式峰 */
         }
         /* 每 100 样本（200 ms）发布一次心率快照：UI 侧 200 ms 刷一次 BPM，
          * 10 Hz 的发布频率足够，不必每样本都进 seqlock。 */
@@ -1076,6 +1215,17 @@ void ecg_pipeline_set_speed(int speed)
     ESP_LOGI(TAG, "replay speed -> %dx", speed);
 }
 
+bool ecg_pipeline_get_dump_wide(void)
+{
+    return s_dump_wide;
+}
+
+void ecg_pipeline_set_dump_wide(bool on)
+{
+    s_dump_wide = on;
+    ESP_LOGI(TAG, "dump format -> %s", on ? "wide (peak + +-%d samples)" : "compact (16/line)");
+}
+
 void ecg_pipeline_set_dump_file(const char *path)
 {
     if (path == NULL || path[0] == '\0') {
@@ -1083,6 +1233,8 @@ void ecg_pipeline_set_dump_file(const char *path)
         s_dump_fill    = 0;
         return;
     }
+    /* ★P2d：先确保缓冲就位（PSRAM 256 KB，失败降级内部 32 KB） */
+    (void)dump_buf_ensure();
     /* `%.*s` 限定长度：-Werror=format-truncation 不允许「源可能比目标长」的裸 %s */
     snprintf(s_dump_path, sizeof(s_dump_path), "%.*s",
              (int)sizeof(s_dump_path) - 1, path);
