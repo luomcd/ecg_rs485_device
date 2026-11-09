@@ -122,6 +122,58 @@ def read_bpm(link):
     return float(m.group(1)) if m else None
 
 
+def query_state(link, timeout=3.0):
+    """查记录状态：返回 (running, remain_s) / None=板子无响应。
+
+    🛑 为什么不再等 `[rpeak rec]` 那行 printf：2026-11-09 实测第 3 轮卡死
+       400+ s 没退。根因是 `read_until` 只靠"匹配到某行"或"时间到"退出，
+       一旦 `p.read()` 阻塞（USB-CDC 异常/SD 写卡住），时间判定永远轮不到。
+       改成**主动查状态**：每 5 s 问一次 `rpeak`，板子活着就一定答，答不上来
+       立刻能判定"无响应"，不会无限等。
+    """
+    try:
+        link.send("rpeak")
+        ok, txt = link.read_until(rb"QRS", timeout, quiet=0.5)
+    except Exception:
+        return None
+    if not ok:
+        return None
+    if "QRS 记录：on" in txt:
+        m = re.search(r"剩 (\d+) s", txt)
+        return (True, int(m.group(1)) if m else -1)
+    return (False, 0)
+
+
+def wait_record_done(link, secs):
+    """轮询到记录结束，带进度条。返回 True=正常结束。"""
+    t0 = time.time()
+    bar_n = 30
+    first = True
+    while True:
+        st = query_state(link)
+        el = time.time() - t0
+        if st is None:
+            print("\n  ⚠ 板子无响应（`rpeak` 查询超时）—— 可能 USB 掉了或固件卡死")
+            return False
+        running, remain = st
+        if not running:
+            if first:
+                print("\n  ⚠ 记录未启动成功（`rpeak` 报 off）")
+                return False
+            print()          # 换行，别粘在进度条后面
+            return True
+        first = False
+        done = secs - remain if remain >= 0 else int(el)
+        done = max(0, min(secs, done))
+        k = int(bar_n * done / float(secs))
+        print("\r  [%s%s] %3d/%d s" % ("#" * k, "-" * (bar_n - k), done, secs),
+              end="", flush=True)
+        if el > secs + 120:
+            print("\n  ⚠ 超过 %d s 仍未结束（板子可能卡在 SD 写）" % (secs + 120))
+            return False
+        time.sleep(5)
+
+
 def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
               remain_min=0.0, fs=500.0):
     print()
@@ -163,21 +215,17 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
 
     print("  ▶ rpeak rec %d" % secs, flush=True)
     link.send("rpeak rec %d" % secs)
-    ok, txt = link.read_until(rb"QRS \xe8\xae\xb0\xe5\xbd\x95\xe5\xbc\x80\xe5\xa7\x8b", 6.0, quiet=0.8)
-    if not ok:
-        print("  ✗ 没看到「QRS 记录开始」，输出如下：")
-        print("    " + txt.strip().replace("\n", "\n    "))
+    time.sleep(3.0)
+    st = query_state(link)
+    if st is None:
+        print("  ✗ 发完记录命令后板子无响应")
+        return None
+    if not st[0]:
+        print("  ✗ 记录没启动（`rpeak` 报 off）—— 可能上一轮还没退干净，或 SD 未挂载")
         return None
 
-    print("  ⏳ 记录中 %d s（无需操作）…" % secs, flush=True)
-    ok, txt = link.read_until(rb"\[rpeak rec\]", secs + 90.0, quiet=0.0)
-    if not ok:
-        print("  ✗ 等待落盘超时（%d s + 90 s），可能是记录没启动成功" % secs)
-        return None
-    m = re.search(r"\[rpeak rec\][^\n]*", txt)
-    print("  ✓ %s" % (m.group(0).strip() if m else "落盘完成"))
-
-    time.sleep(1.0)
+    wait_record_done(link, secs)
+    time.sleep(1.5)
     link.send("result-dump rpeak_hrv.txt")
     ok, txt = link.read_until(rb"# ---- END", 30.0, quiet=1.0)
     if not ok:
@@ -269,6 +317,14 @@ def summarize(rows):
 
 
 def main():
+    # 🛑 强制行缓冲：2026-11-09 实测，每轮结束后的 print 会积压在缓冲区里
+    #   （终端看不到"已存 / σ=..."），直到 Ctrl+C 才一次性刷出 ⇒ 用户误以为脚本卡死。
+    #   进度条虽然用了 flush=True，但其余 print 没有，块缓冲下就出事。
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description="HRV 精度扫频采集")
     ap.add_argument("--port", default="COM35")
     ap.add_argument("--bpms", default="60,90,120,150,180,210", help="心率序列，逗号分隔")
