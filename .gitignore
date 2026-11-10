@@ -29,7 +29,13 @@ esp32/cardiolite-ecg/dependencies.lock
 esp32/_build_*.log
 
 # --- 项目记忆 / 编辑器本地态 ---
-**/.workbuddy/
+# 🛑 2026-11-10 改口径（猛哥拍板）：**记忆要入库做异地副本**。
+#    写法必须是「`/.workbuddy/*` + `!/.workbuddy/memory/`」——
+#    🛑 **不能写成整目录排除 `**/.workbuddy/`**：那是目录级 pattern，
+#       Git 一旦把目录整个排除就**不再往里看**，后面的 `!` 取反会**静默失效**
+#       （本地看着"规则写了"，git 里什么都没有，换机器就丢记忆）。
+/.workbuddy/*
+!/.workbuddy/memory/
 **/.vscode/launch.json
 **/.vscode/settings.json
 
