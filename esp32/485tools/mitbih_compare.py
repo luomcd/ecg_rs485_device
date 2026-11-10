@@ -50,6 +50,13 @@ EXE = {0: os.path.join(HERE, "_rp_cmp", "rp_fid0.exe"),
 REFRACTORY = 80          # 与 ecg_rpeak.h 的 ECG_RP_REFRACTORY 一致
 PROM_W = 20              # 突出度参考窗（±20 样本 = ±40 ms）
 PROM_LOW = 0.20          # 突出度 < 典型值的 20% 记为"非 R 形态"
+
+# 🛑 是否剔首尾各 5 s（`SKIP_EDGE_S`）。
+#    默认 True = 与文献/历史基线 W1 可比口径。
+#    `--no-trim` 置 False = **完整数据，不做任何裁剪**（2026-11-10 猛哥要求）。
+#    ⚠ 两者的差主要来自"文件第 1 个样本即信号、检测器零初值"这个**离线重放特有**的伪条件，
+#      不是产品工况（真实设备上电时没有数据进入）。
+NO_TRIM = False
 FRAME_BYTES = 59         # AA55|TYPE|LEN(2)|SEQ(2)|STA|25×int16|CRC8
 SAMPLES_PER_FRAME = 25
 SAMPLE_OFF = 8           # AA55(2)+TYPE(1)+LEN(2)+SEQ(2)+STA(1)
@@ -121,10 +128,12 @@ def prominence(samples, idx, w=PROM_W):
 
 def summarize(rec, samples, truth_b, det, total):
     trim = [(s, sym) for s, sym in truth_b]
-    if total:
+    if total and not NO_TRIM:
         lo, hi = E.SKIP_EDGE_S * E.FS, total - E.SKIP_EDGE_S * E.FS
         trim = [(s, sym) for s, sym in trim if lo <= s <= hi]
-    det_t = [v for v in det if (not total) or (E.SKIP_EDGE_S * E.FS <= v <= total - E.SKIP_EDGE_S * E.FS)]
+        det_t = [v for v in det if lo <= v <= hi]
+    else:
+        det_t = list(det)
 
     r = E.score(trim, det_t)
     tp, offs, tpk = matched_offsets([s for s, _ in trim], det_t)
@@ -184,8 +193,9 @@ def collect_count_events(rec, samples, truth_b, det, total, fid):
     out = []
     if not det:
         return out
-    lo = E.SKIP_EDGE_S * E.FS if total else 0
-    hi = (total - E.SKIP_EDGE_S * E.FS) if total else (1 << 62)
+    use_edge = bool(total) and not NO_TRIM
+    lo = E.SKIP_EDGE_S * E.FS if use_edge else 0
+    hi = (total - E.SKIP_EDGE_S * E.FS) if use_edge else (1 << 62)
     d = [v for v in det if lo <= v <= hi]
     tb = [s for s, _ in truth_b if lo <= s <= hi]   # truth_b 是 (样本, 符号) 元组
     if not tb:
@@ -221,10 +231,14 @@ def main():
     ap = argparse.ArgumentParser(description="P4-b：MIT-BIH × {fid0,fid1} 对账")
     ap.add_argument("--records", nargs="*")
     ap.add_argument("--skip-run", action="store_true")
+    ap.add_argument("--no-trim", action="store_true",
+                    help="完整数据：不剔首尾各 5 s（不可与文献直接比）")
     ap.add_argument("--dump-count-events", action="store_true",
                     help="把 rr==REFRACTORY 的每一对摊开成 events.csv（逐例可复算）")
     a = ap.parse_args()
 
+    global NO_TRIM
+    NO_TRIM = a.no_trim
     bins = sorted(glob.glob(os.path.join(MIT_BASE, "*_500.bin")))
     recs = [os.path.basename(b).replace("_500.bin", "") for b in bins]
     if a.records:
@@ -238,8 +252,9 @@ def main():
     rows = {0: [], 1: []}
     events = []
     total_s = 0.0
-    print("记录数 %d   exe: fid0/fid1  口径由 mitbih_eval 提供（±%d 样本、首尾剔 %d s）"
-          % (len(recs), E.TOL, E.SKIP_EDGE_S))
+    print("记录数 %d   exe: fid0/fid1  匹配窗 ±%d 样本；**%s**"
+          % (len(recs), E.TOL,
+             "完整数据，不剔边" if NO_TRIM else "首尾各剔 %d s（与文献/历史可比）" % E.SKIP_EDGE_S))
 
     for k, rec in enumerate(recs, 1):
         binp = os.path.join(MIT_BASE, rec + "_500.bin")
@@ -324,7 +339,7 @@ def main():
             print("  fid=%d：rr==80 %d 次 ⇒ %.4f 次/min" % (fid, nr, nr / (total_s / 60.0)))
 
     # ---- 落盘 ----
-    csv = os.path.join(OUTDIR, "summary.csv")
+    csv = os.path.join(OUTDIR, "summary_full.csv" if NO_TRIM else "summary.csv")
     with open(csv, "w", encoding="utf-8", newline="\n") as f:
         f.write("fid,rec,n,tp,fp,fn,se,pp,der,off_mean,off_med,off_p95,off_max,"
                 "prom_ref,n_low,n_opp,n_rr80,nbeats\n")
