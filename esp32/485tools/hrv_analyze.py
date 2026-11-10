@@ -174,6 +174,26 @@ def analyze(peaks, fs=500.0, true_bpm=180.0):
     expect = out["span_s"] * true_bpm / 60.0 + 1.0
     out["expect"] = expect
     out["count_delta"] = out["n"] - expect
+    # ---- ④ ★评审 T223 Q1：以「峰」为统计单位的稳健指标 ----
+    #   🛑 一个错误峰会造成两个异常 RR ⇒ 异常峰数 ≈ 异常间期数 / 2。
+    #     用 RR 间期数当分子会系统性高估一倍。
+    #   🛑 阈值必须**相对**：90 bpm 的漂移是 9 样本，T=333 ⇒ 2.7%；
+    #     若用绝对阈值 10 就会漏掉它（这正是之前判 90 bpm"异常率 0%"的原因）。
+    thr = max(3.0, 0.02 * out["T_med"])
+    err = [abs(v - out["T_med"]) for v in rr]
+    n_anom = sum(1 for v in err if v > thr)
+    se = sorted(err)
+    out["err_thr"]        = thr
+    out["anom_rr"]        = n_anom
+    out["anom_peak"]      = n_anom / 2.0
+    out["anom_peak_pct"]  = 100.0 * (n_anom / 2.0) / out["n"]
+    out["p95_err"]        = se[int(0.95 * (len(se) - 1))]
+    out["p99_err"]        = se[int(0.99 * (len(se) - 1))]
+    out["max_err"]        = se[-1]
+    # 综合判定：σ 达标 **且** 一个异常间期都没有
+    out["verdict"] = ("PASS" if (out.get("sigma_e_d2", 99) <= 0.5 and n_anom == 0)
+                      else "FAIL")
+
     return out
 
 
