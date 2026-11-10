@@ -41,10 +41,16 @@ from mitbih_eval import read_truth, score          # noqa: E402
 from mitbih_prep import write_bin                 # noqa: E402
 
 FS = 500
-REC_DIR = os.path.join(ROOT, "mit_bih", "records")
-HOST_EXE = os.path.join(HERE, "rpeak_host", "rpeak_host.exe")
+# 可由命令行覆盖（2026-11-10）：默认优先用当前固件编出的 _rp_cmp/rp_fid1.exe，
+# 否则回退到老的 rpeak_host.exe（⚠ 后者可能是旧代码编的，结论会失真）。
+_fid1 = os.path.join(HERE, "_rp_cmp", "rp_fid1.exe")
+HOST_EXE = _fid1 if os.path.exists(_fid1) else os.path.join(HERE, "rpeak_host", "rpeak_host.exe")
 WINAPP = os.path.join(ROOT, "recordings_winapp")
-GROUPS = ("orig", "pad0", "padconst", "padreal")
+REC_DIR = os.path.join(ROOT, "mit_bih", "records")
+# 2026-11-10 增 padc0：**常量取记录首样本值** ⇒ 拼接处零台阶。
+# 四组原设计里 pad0/padconst 的基线（≈5 LSB）与记录首样本（≈9000）之间有 ~9000 的台阶，
+# 那正是"拼接FP"的来源；padc0 就是为了单独消掉这个台阶。
+GROUPS = ("orig", "pad0", "padconst", "padc0", "padreal")
 
 
 # ---------------------------------------------------------------- 帧解析
@@ -103,6 +109,7 @@ def run_host(samples, tmpdir, tag):
 
 
 def main():
+    global HOST_EXE, REC_DIR, WINAPP
     ap = argparse.ArgumentParser()
     ap.add_argument("--pad-s", default="5", help="预填充秒数，可逗号列表做扫描（默认 5）")
     ap.add_argument("--pad-tail", action="store_true", help="尾部也拼同样长度基线")
@@ -111,7 +118,16 @@ def main():
                     help="取静息样本的 WinApp 录制文件（默认取该文件尾部）")
     ap.add_argument("--tol", type=int, default=75, help="匹配窗 ±样本（默认 75 = 150 ms）")
     ap.add_argument("--csv", default="", help="逐条结果另存 CSV（可选）")
+    ap.add_argument("--exe", default="", help="被测 host exe（默认 _rp_cmp/rp_fid1.exe）")
+    ap.add_argument("--rec-dir", default="", help="MIT records 目录")
+    ap.add_argument("--winapp-dir", default="", help="静息样本所在目录 recordings_winapp")
     args = ap.parse_args()
+    if args.exe:
+        HOST_EXE = args.exe
+    if args.rec_dir:
+        REC_DIR = args.rec_dir
+    if args.winapp_dir:
+        WINAPP = args.winapp_dir
 
     pad_secs = [float(s) for s in str(args.pad_s).split(",") if s.strip()]
     max_n = int(round(max(pad_secs) * FS))
@@ -139,6 +155,7 @@ def main():
         pads["pad0"] = np.zeros(pad_n, np.float64)
         pads["padconst"] = np.full(pad_n, q_mean, np.float64)
         pads["padreal"] = quiet
+        pads["padc0"] = "PER_REC"          # 特殊：内容依赖每条记录的首样本
 
         rows = []
         for rec in recs:
@@ -154,6 +171,8 @@ def main():
 
             for gname in GROUPS:
                 pad = pads[gname]
+                if isinstance(pad, str) and pad == "PER_REC":
+                    pad = np.full(pad_n, base[0], np.float64)   # 与记录首样本同值 ⇒ 零台阶
                 if pad is None:                   # orig：不加任何填充（尾填充模式下也一样）
                     seq, head = base, 0
                 elif args.pad_tail:
