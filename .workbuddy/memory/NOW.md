@@ -1,121 +1,79 @@
 # NOW.md — ecg_rs485_device 交接锚点
 
-> **更新：2026-11-09 17:40。HEAD＝`8a0022b`（待本次提交后更新），工作区干净。**
-> 新会话读完本文件即可接上；铁律见同目录 `MEMORY.md`；立项/拍板过程见 `docs/T1xx`。
+> **更新：2026-11-10 19:00。HEAD＝`8c39e79`（本次提交后前移），工作区干净。**
+> 新会话读完本文件即可接上；铁律见同目录 `MEMORY.md`；结论见 `docs/T224~T228`。
 
 ---
 
 ## 1 一句话现状
 
-**UT-2211 接 +5V 后链路全清**（上行坏帧 2.3%→0.000%，下行 50%→100%）。
-**HRV 6 心率 × 3 次测完：60/150/180/210 PASS（σ=0.21~0.32，贴近量化极限 0.289），
-90/120 FAIL（σ=2.72/5.93）**。FAIL 机制已定位为「单拍下降支误检」（见 `docs/T221`），
-**下一步：加原始域局部极大验证 → 重测 V1~V4**。
+**「QRS fid 落点修复」这条技术线今天收尾了**（T224 定位 → T225 评审 → T226 落码+上板 → T227 MIT 全量 → T228 操作手册）。
+**P4-b 完成**：48 条 MIT-BIH，主口径＝完整数据，**Se 99.087 / +P 99.025 / DER 1.889**，`fid` 零副作用；
+**可疑现象（原缺陷 B）判定不做**（0.0055 次/min，加门代价 133 倍）。
+**明天第一件事：P4-f LOD 门控方案对齐** —— 设备无输入时仍 4.6 拍/秒乱打点，而 LOD 位只用于显示、零处参与门控。
 
 ---
 
-## 2 本周增量（11-06，T212~T219）
+## 2 今日净增量（11-10）
 
-| 任务 | 结论 | 落点 |
+| 项 | 结论 | 落点 |
 |---|---|---|
-| **T212** | 清屏改为**纯视觉**（方案 B）：不 `restart`、不归零、不改 `play`。§8.4 已订正 | `docs/T212_*` |
-| T212b | 加 `ui-clear`，清屏可无人值守回归（只覆盖动作层） | `cli_console.c` |
-| **T213** | `485-stat` 的 STATUS 行加**帧龄** + 陈旧标注（`sta_ms`） | `app_state.c` |
-| **T214** | 加 `485-perf <secs>`：窗口帧率/丢帧/帧长/内存，分母用实测时长 | `cli_console.c` |
-| **T215** | 评估定版：R峰记录成本、CH2 真实通道、LOD 影响（含 DRDY 周期订正） | `docs/T215_*` |
-| **T216** | 加 `rpeak on\|off`（本地，只停绘制）＋ `mem`（RAM/PSRAM 实测） | `cli_console.c` |
-| **T217** | 加 `rpeak rec`：**固定 300 s** 自动落盘 QRS 峰序列 | `cli_console.c` |
-| **T218** | HRV 测试规范 v0.2 + `hrv_analyze.py`（定位精度分析） | `docs/T218_*` |
-| T219 | `rec` 完成提示 + PROGRESS 抑制 + 时基判据改鲁棒 | 同上 |
+| **T224** | 真因＝回溯路径 `locate_rpeak` 覆盖不足；两种失效形态（`found=false` 误差 9 / 部分覆盖静默选错误差 27） | `docs/T224_*` |
+| **T225** | 第三方评审：条件批准 P3A，只落 fid、不并入缺陷 B | `docs/T225_*` |
+| **T226** | P3A 落码 + 上板：90 bpm **2.50→0.35**、120 bpm **0.22**；`rpeak diag` 上线 | `docs/T226_*` |
+| **T227 v0.7** | MIT 48 条：主口径完整数据、首秒根因三层、加基线五组实测、P4-e/P4-f 待办 | `docs/T227_*` |
+| **T228** | MIT 上板测试操作手册（batch vs mit-run、三道闸门、8 条故障排查、§9 MIT 覆盖不到的东西） | `docs/T228_*` |
+| 固件 | `ecg_rpeak.c/h` fid + 诊断；`ecg_pipeline` + `cli_console` 加 `rpeak diag` | commit `5002ef9` |
+| 工具 | `mitbih_compare.py`（48 条，`--no-trim`）、`mitrun.py`（板端 8x 抽样）、`esp_run.py`（`--stem` 通用回传）、`replay_rpeak.py`、`rp_compare.py`、`pc485_cmd.py`、`pc_sweep_replay.py` | `esp32/485tools/` |
 
-> T198~T211（RS485 通道改造）已全部结案，文档在 `docs/T198~T206`。
-> **T213/T214/T216/T217/T219 不单独立文档**：改动记录在 commit message 与当日日报里，
-> 判据与用法已进本文件与 `MEMORY.md`。
+**板端三层验证全部通过**：batch 3 条 + `mit-run` 8× 5 条，**逐峰与 PC 完全一致，`dropped` 全 0**
+⇒ **xtensa 单精度与 x86 逐位一致，编译器/FPU 这层关闭**。
 
 ---
 
-## 3 待办（按优先级）
+## 3 待办（按优先级，明天从这里开始）
 
-> **明天第一件事：讨论怎么优化**（猛哥 18:13 定）。核心已明确——三类失效、三条判据，
-> 细节全在 `docs/T221` §3.4 与 §6.0，**先读文档再动手**。
+1. **🔴 P4-f LOD 门控**（已提前到最前）：无输入 / 导联脱落时**抑制打点、不发布 R 峰、不喂 HRV**。
+   - 依据：ADS1293 LOD 位已上报，但 `ecg_pipeline.c` / `ecg_rpeak.c` **零引用**（只 `ecg_frame.c:270,279` 打印）；
+   - 三条候选：①LOD 直接抑制（首选，硬信息）②阈值加绝对下限 ③有效信号门（需标定）；
+   - ❌ 已排除：`K × noise_peak` 闸门（10-29 实测，`noise_peak` 会被伪峰抬高）。
+2. **🔴 P4-e 空载与切换专项**：①AECG100 无输出 ②导联悬空 ③空载→接上信号。
+   判据已定死在 T227 §6.2 / T228 §9.3（零打点、BPM 显示 `--`、数拍内起跳）。
+3. **🟡 决定主口径**：完整数据（DER 1.889）vs 零台阶预热 `padc0`（DER 1.85，不丢数据）。
+   `padc0` 是唯一"不丢数据且三项同时改善"的填法，**待拍板是否升为主口径**。
+4. **🟡 决定 T227 §2 主表**已切到完整数据；剔边降为 §2.2 对比口径 —— 已做，如需回退告诉我。
+5. **🟡 MEMORY.md 已 11 KB（超 3000 建议上限）**：明天开局先压缩，细节留在本文件与 T227。
+6. **⏸ P4-c 真实贴片/多导联、P4-d 双接收复核、P3B 双坐标**：均 backlog，理由见 T227 §6.1/§6.2。
 
-1. **🔴 修法方案对齐**（先讨论，别直接改码）：T221 §6.0 的三条判据
-   C1 极性（自适应，不能写死）/ C2 幅度 ≥30% 平均 R（前 5 拍冷启动）/ C3 落点纠正。
-   ⚠ C3 单独不够——60 bpm 的负向假峰那里没有正向极大，搜索会失败。
-2. **🔴 V4（改码前）**：`rpeak wide on` + 120 bpm 记一次，确认 ±27 的真实漂移形态。
-3. **🔴 V1**：改完后测 90 bpm 3 次，σ ≤ 0.5 **且峰数仍为 270**（峰数变少 = 纠正逻辑丢了拍）。
-4. **🔴 V5**：60 bpm 连测 6 次（偶发率约 1/3，需多次才抓得到），峰数须恒为 180。
-5. **🟡 V3 回归**：四个 PASS 心率各 1 次，不劣化（≤0.35）。
-6. **🟡 查 `is_twave` 的 spacing<360 窗**：60 bpm 的 P 波在 R 后约 900 ms，完全在窗之外。
-7. **🟡 180 bpm 补 1 次**（第 15 轮 dump 失败，已有 2 次一致）。
-8. **🟡 真机态其余性能项**：显示流畅性、端到端延迟、断链恢复、30 min 长稳。
-9. **🟡 CH2 / LOD（T215 P3~P6）**：顺延。
-10. **⏸ 记忆入库**：`.gitignore:32` 是 `**/.workbuddy/` ⇒ 无异地副本。
-    修法：改 `/.workbuddy/*` + `!/.workbuddy/memory/`（取反必须这样写）。
+---
 
-### 3.1 测过但**不要**再做的事
+## 4 关键判据速查（今天新增/踩过的）
 
-- 🛑 调 `ECG_RP_REFRACTORY`：90/120 的漂移点间距 342 样本（684 ms），远大于 160 ms
-  不应期，调它无效，只会误杀 210 bpm 的真峰（RR=143 样本）。
-- 🛑 "不是局部极大就丢弃"：会造成真漏检（270 → 约 246）。
-- 🛑 用"整数 RR / 高心率退化 / 积分窗占比"解释 90/120：三条都已被 18 轮数据推翻。
-- 🛑 把 60 bpm 的问题说成"漏检"或"只多检一个"：实测是**多检 2 + 漏检 1 = 净 +1**。
-
-## 4 工具配方
-
-**构建 / 烧录**
-```bash
-# ESP32（⚠ 先关 SerialDebug 等占用 COM35 的工具，否则 PermissionError 13）
-cd /c/work2026/VsPro/ecg_rs485_device/esp32
-./485tools/idf.sh -C .../esp32/cardiolite-ecg build
-./485tools/idf.sh -C .../esp32/cardiolite-ecg -p COM35 app-flash
-# 🛑 flash.sh 硬编码旧路径 C:/work2026/CardioLite，别用
-
-# STM32（EIDE，产物在 <根>/build）；IAR=C:\iar\ewarm-9.70.2
-python stm32/tools/_fw_build.py
+**MIT 评测**
 ```
+py mitbih_compare.py --skip-run            # 剔边口径（与文献/W1 可比）→ summary.csv
+py mitbih_compare.py --no-trim --skip-run  # 完整数据（主口径）→ summary_full.csv
+py mitbih_eval.py <ann500.txt> <peaks.txt> # 单份，同时打印 [全段] 与 [排除首尾5s]
+py mitbih_pad_eval.py --pad-s 5 --pad-tail # 加基线五组对照（orig/pad0/padconst/padc0/padreal）
+```
+- 🛑 **两套口径不可混比**：完整数据 Se 99.087/+P 99.025/DER 1.889；剔边 99.106/99.094/1.801。
+- 🛑 **三道闸门**：`samples==902800` / `bad==0` / （mit-run/play）`dropped==0`，缺一不可。
+- 🛑 **判"一致"只认逐峰序列相同**，不认 σ / 峰数 / BPM 相近。
 
-**进入真机实时态（每次重启/烧录后都要走一遍）**
+**板端 MIT**
 ```
-485-start            ← 只开 ESP32 侧 UART1，**不会**让 STM32 出数据
-485-send start       ← 发 0x01 才进 RUN（下行 ~50% 丢包，失败重发，1~2 次即通）
-485-stat / 485-perf  ← 看 frames 在涨 = 真在出数据
+mit-set 100,108,208 → mit-run-all → restart   # batch：黑屏全速，对账权威（9.3 s/条）
+result-dump batch_mit_result.txt               # 或 py esp_run.py --dump-only --stem ... --out ...
+mit-run 108 --speed 8                          # 有波形，但必须看 FILE 行 dropped=0
 ```
+- 🛑 SD 上**只有 .bin、没有 _ann500.txt** ⇒ 板上只出峰序列，评分必须在 PC。
+- 🛑 `rpeak rec` 在 FILE 源下**被固件拒绝**（`只在 485 实时源下记录`）。
+- 🛑 **SD 挂死只能断电**：批处理异常后 `SD 卡未挂载`，软复位救不回来（11-10 实发一次）。
 
-**ESP32 CLI 要点**
+**fid 相关**
 ```
-log info                     ★靠日志判据的验收必须先开（上电压到 ERROR）
-485-perf [secs]              窗口性能：帧率/丢帧/帧长/内存
-rpeak on|off                 打点显示（只停绘制，BPM 照算）
-rpeak rec / rec off          记录 QRS 峰序列，**secs 可选 30~600，默认 300**
-                              → /sdcard/rpeak_hrv.txt（⚠ 每次覆盖，务必立刻回传）
-ui-clear                     清屏（与屏上键同一段）
-mem                          内部 RAM / PSRAM
-result-dump rpeak_hrv.txt    回传峰序列
+rpeak diag     # 板端看 来源/trigger/fid/fid−trigger/lag/窗口覆盖；形态②唯一可观测判据＝窗口覆盖<72
 ```
-🛑 `play` 在 RS485 源下是**静默空操作**（只置 `s_change`，485 生产者不消费）——先 `485-stop`。
-🛑 `485-send` 未 `485-start` 时原地返回（`Δtx=0`，不是失败）。
-
-**协议（速查）**
-帧：`AA 55 | TYPE | LEN(2,LE) | CMD | ARG | CRC8`（下行 TYPE=0x80，总长 `6+LEN`）
-```
-START AA 55 80 01 00 01 5D   STOP AA 55 80 01 00 02 54   SNAP AA 55 80 01 00 10 2A
-MODE  ...02 00 04 (00 EF/01 E8)   NOTCH ...05 (00 FA/01 FD)   CH2 ...06 (00 C5/01 C2)
-```
-门控：`0x10/0x06/0x11` **仅 STOP 态**；`0x04/0x05/0x06` 要求 `argLen==2`，否则**静默丢弃**。
-上行显示帧：`AA 55 01 | LEN | SEQ | STA | 25×int16 | CRC8`；**59 B 单通道 / 109 B 双通道**。
-判双通道生效**只看帧长 109**，屏上画布切了不算。STA：bit0 mode/bit1 notch/bit2 ch/bit3 raw853/bit4 LOD。
-
-**探针（ST-Link）**：必须 `-c mode=hotplug`；每次 attach 都会 halt 内核制造丢字节 ⇒ **测下行时禁碰 SWD**。
-
-**HRV 分析 / 采集**
-```bash
-py 485tools/hrv_analyze.py --port COM35 --dump rpeak_hrv.txt --true-bpm 180   # 或 210
-py 485tools/hrv_analyze.py --selftest                                          # 自检
-py 485tools/hrv_sweep.py --bpms 60,90,120,150,180,210 --repeat 3 --secs 180    # 扫频
-```
-🛑 `rpeak_hrv.txt` 是**固定文件名、每次覆盖**。11-06 已因此丢掉 180 bpm 原始数据。
-`hrv_sweep.py` 每轮回传后立刻另存 `hrv_data/rpeak_hrv_{bpm}bpm_{n}.txt`，手工跑必须自己另存。
 
 ---
 
@@ -123,16 +81,15 @@ py 485tools/hrv_sweep.py --bpms 60,90,120,150,180,210 --repeat 3 --secs 180    #
 
 | 位置 | 装什么 |
 |---|---|
-| **本目录** | RS485 / ESP32 / STM32 通道 / 上位机协议 / HRV 测量（本项目本职） |
-| `ads1293_demo/.workbuddy/memory/` | ADS1293 **滤波链**（notch / 带通 / dc_block / µV 定标） |
+| **本目录** | RS485/ESP32/STM32 通道、上位机协议、QRS 检测与 HRV 测量（本项目本职） |
+| `ads1293_demo/.workbuddy/memory/` | ADS1293 滤波链（notch/带通/dc_block/µV 定标） |
 
-⚠ **历史遗留未迁移**：T198~T211 的细节仍在 `ads1293_demo` 的 `MEMORY.md` §10/§13
-与 `2026-11-02`~`2026-11-05` 四份日报里。
+⚠ **记忆已入库**（今天改的 `.gitignore`：`/.workbuddy/*` + `!/.workbuddy/memory/`，取反不能写成整目录排除）。
 
 ---
 
 ## 6 开场白（新会话第一句可直接用）
 
-> 工作目录＝`C:\work2026\VsPro\ecg_rs485_device`。先读 `.workbuddy/memory/NOW.md`
-> 和 `MEMORY.md`，再读 `docs/T218_*` 的 §4/§7。然后从 NOW.md §3 第 1 项
-> （峰序列加峰处邻域值）开始。
+> 工作目录＝`C:\work2026\VsPro\ecg_rs485_device`。先读 `.workbuddy/memory/NOW.md` 与 `MEMORY.md`，
+> 再读 `docs/T227`（§2 主口径 / §2.3 首秒根因 / §6.2 待办）与 `docs/T228`（上板操作）。
+> 今天从 **P4-f LOD 门控方案对齐** 开始——先讨论方案，别直接改码。
