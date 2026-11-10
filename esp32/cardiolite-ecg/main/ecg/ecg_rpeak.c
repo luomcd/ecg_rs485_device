@@ -41,10 +41,22 @@ static void peak_push(ecg_rpeak_t *rp, int64_t idx)
  * 内部：LocateRPeak —— 在 ±`ECG_RP_LOCATE_HALF`（当前 40）样本窗口的 filteredHistory
  *   里找 |value| 最大的点。⚠ 窗口半径**只引用宏、不写字面量** —— 2026-10-27 就吃过
  *   一次亏：Q6 把宏从 55 改到 40，这里还留着 "±55"，读代码的人会按错的值推理。
+ *
+ * `out_win`（可为 NULL）：回填**窗口内真正扫到**的样本数。
+ *   🛑 满窗是 **72**（`ECG_RP_LOCATE_HALF*2+1 = 81` 是**不存在的基准**）：
+ *      调用时 `trigger = sample_index - 1 - INTEG_WIN/2`，窗尾 `trigger+40` 落在**未来**，
+ *      最多只能取到当前样本 ⇒ 左半 40 + [trigger, trigger+31] 32 个 = 72。
+ *      `out_win < 72` 即发生了截断 —— 这是 T224 形态②（部分覆盖、静默选错极值）
+ *      唯一能被观测到的物理量。
  * ========================================================================== */
 
-static int64_t locate_rpeak(const ecg_rpeak_t *rp, int64_t integrated_peak)
+#define LOCATE_WIN_FULL  (ECG_RP_LOCATE_HALF + 1 + (ECG_RP_INTEG_WIN / 2 + 1))
+
+static int64_t locate_rpeak(const ecg_rpeak_t *rp, int64_t integrated_peak, int *out_win)
 {
+    if (out_win != NULL) {
+        *out_win = 0;
+    }
     if (rp->filt_n == 0) {
         return integrated_peak;
     }
@@ -55,6 +67,7 @@ static int64_t locate_rpeak(const ecg_rpeak_t *rp, int64_t integrated_peak)
     int64_t best_idx     = integrated_peak;
     float   best_abs     = -1.0f;
     bool    found        = false;
+    int     nwin         = 0;
 
     /* 遍历环形里的全部有效项（≤140），挑 index 落在窗口内且 |value| 最大的 */
     const int first = (rp->filt_pos - rp->filt_n + ECG_RP_FILT_HIST * 2) % ECG_RP_FILT_HIST;
@@ -63,6 +76,7 @@ static int64_t locate_rpeak(const ecg_rpeak_t *rp, int64_t integrated_peak)
         if (h->index < start || h->index > end) {
             continue;
         }
+        nwin++;
         const float a = fabsf(h->value);
         if (!found || a > best_abs) {
             found    = true;
@@ -70,8 +84,24 @@ static int64_t locate_rpeak(const ecg_rpeak_t *rp, int64_t integrated_peak)
             best_idx = h->index;
         }
     }
+    if (out_win != NULL) {
+        *out_win = nwin;
+    }
     return found ? best_idx : integrated_peak;
 }
+
+#if ECG_RP_DIAG
+static void set_diag(ecg_rpeak_t *rp, int64_t trigger, int64_t fid, int64_t lag,
+                     int win, int src)
+{
+    rp->last_diag.trigger   = trigger;
+    rp->last_diag.fid       = fid;
+    rp->last_diag.lag       = lag;
+    rp->last_diag.win       = (int16_t)((win > 32767) ? 32767 : win);
+    rp->last_diag.src       = (int8_t)src;
+    rp->last_diag.win_short = (int8_t)((win >= 0 && win < LOCATE_WIN_FULL) ? 1 : 0);
+}
+#endif
 
 /* ============================================================================
  * 内部：BPM（最近 5 个 RR → 过滤 [80,1000] → 排序 → 中位数）
@@ -211,11 +241,28 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
             const float   slope = fabsf(rp->deriv_p1);
             const float   sec_thr = rp->noise_peak + 0.5f * (rp->signal_peak - rp->noise_peak);
 
+            /* ★T225 §4.2：落点只在**候选入池那一刻**算一次，主路径直接复用。
+             *   🛑 不能写“主路径另调一次 locate_rpeak”——那就是两套解析，
+             *      而且入池时的窗口覆盖与主路径接受时**完全相同**，重算纯属浪费。 */
+            int64_t fid_now = 0;
+            int     win_now = 0;
+            bool    fid_ready = false;
+
             /* 候选池（回溯搜索用） */
             if (prev_integ > fmaxf(TINY, sec_thr)) {
+#if ECG_RP_USE_STORED_FID
+                fid_now   = locate_rpeak(rp, peak, &win_now);
+                fid_ready = true;
+#endif
                 rp->cand[rp->cand_pos].index = peak;
                 rp->cand[rp->cand_pos].value = prev_integ;
                 rp->cand[rp->cand_pos].slope = slope;
+#if ECG_RP_USE_STORED_FID
+                rp->cand_fid_delta[rp->cand_pos] = (int16_t)(fid_now - peak);
+#if ECG_RP_DIAG
+                rp->cand_win[rp->cand_pos]       = (uint8_t)((win_now > 255) ? 255 : win_now);
+#endif
+#endif
                 rp->cand_pos = (rp->cand_pos + 1) % ECG_RP_CAND_MAX;
                 if (rp->cand_n < ECG_RP_CAND_MAX) {
                     rp->cand_n++;
@@ -230,7 +277,16 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
                                       && (slope < rp->last_accepted_slope * 0.5f);
 
                 if (!is_twave && spacing >= ECG_RP_REFRACTORY) {
-                    accept_peak(rp, locate_rpeak(rp, peak), prev_integ, slope, out_index);
+                    int64_t fid;
+                    if (fid_ready) {
+                        fid = fid_now;                       /* 复用入池时的结果 */
+                    } else {
+                        fid = locate_rpeak(rp, peak, &win_now);
+                    }
+#if ECG_RP_DIAG
+                    set_diag(rp, peak, fid, 0, win_now, 0);
+#endif
+                    accept_peak(rp, fid, prev_integ, slope, out_index);
                     detected = true;
                 } else {
                     rp->noise_peak = 0.125f * prev_integ + 0.875f * rp->noise_peak;
@@ -273,13 +329,35 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
                 }
             }
             if (best_k >= 0) {
-                const ecg_rp_cand_t *c = &rp->cand[(cfirst + best_k) % ECG_RP_CAND_MAX];
+                const int cslot = (cfirst + best_k) % ECG_RP_CAND_MAX;
+                const ecg_rp_cand_t *c = &rp->cand[cslot];
                 const float need = rp->noise_peak + 0.5f * (rp->signal_peak - rp->noise_peak);
                 if (c->value > need) {
-                    accept_peak(rp, locate_rpeak(rp, c->index), c->value, c->slope, out_index);
+                    int64_t fid;
+                    int     win = 0;
+#if ECG_RP_USE_STORED_FID
+                    /* ★T225 §5.1：直接取入池时算好的落点。
+                     * 🛑 范围保护不可省：若将来改了 LOCATE_HALF 而 int16 溢出、
+                     *    或环形池被覆写过，宁可退回 trigger 也不能跳出去读陈旧槽位。 */
+                    fid = c->index + (int64_t)rp->cand_fid_delta[cslot];
+                    if (fid < c->index - ECG_RP_LOCATE_HALF ||
+                        fid > c->index + ECG_RP_LOCATE_HALF) {
+                        fid = c->index;
+                    }
+#if ECG_RP_DIAG
+                    win = (int)rp->cand_win[cslot];
+#endif
+#else
+                    fid = locate_rpeak(rp, c->index, &win);
+#endif
+                    const int64_t lag = rp->sample_index - c->index;
+#if ECG_RP_DIAG
+                    set_diag(rp, c->index, fid, lag, win, 1);
+#endif
+                    accept_peak(rp, fid, c->value, c->slope, out_index);
                     detected = true;
 
-                    /* 丢弃 <= 该候选的一切候选 */
+                    /* 丢弃 <= 该候选的一切候选（🛑 仍按 trigger 判，P3A 不混坐标） */
                     int drop = 0;
                     for (int k = 0; k < rp->cand_n; k++) {
                         const ecg_rp_cand_t *cc = &rp->cand[(cfirst + k) % ECG_RP_CAND_MAX];
@@ -324,3 +402,10 @@ int64_t ecg_rpeak_sample_index(const ecg_rpeak_t *rp)
 {
     return rp->sample_index;
 }
+
+#if ECG_RP_DIAG
+const ecg_rp_diag_t *ecg_rpeak_last_diag(const ecg_rpeak_t *rp)
+{
+    return &rp->last_diag;
+}
+#endif

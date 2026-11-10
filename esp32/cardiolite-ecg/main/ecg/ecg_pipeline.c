@@ -1215,6 +1215,17 @@ void ecg_pipeline_set_speed(int speed)
     ESP_LOGI(TAG, "replay speed -> %dx", speed);
 }
 
+#if ECG_RP_DIAG
+bool ecg_pipeline_last_diag(ecg_rp_diag_t *out)
+{
+    if (out == NULL) {
+        return false;
+    }
+    *out = *ecg_rpeak_last_diag(&s_rp);
+    return out->fid != 0;      /* fid==0 且 trigger==0 = 还没接受过峰 */
+}
+#endif
+
 bool ecg_pipeline_get_dump_wide(void)
 {
     return s_dump_wide;

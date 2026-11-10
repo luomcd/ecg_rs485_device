@@ -21,6 +21,7 @@
 
 #include "esp_err.h"
 #include "ecg_ringbuf.h"
+#include "ecg/ecg_rpeak.h"   /* ecg_rp_diag_t（★T226 P4-a：板端诊断） */
 
 typedef struct {
     uint32_t pushed;        /* 累计推入环缓的样本数 */
@@ -185,6 +186,20 @@ void ecg_pipeline_set_rpeak_dump(bool on);
 void ecg_pipeline_set_prog(bool on);
 
 void ecg_pipeline_set_speed(int speed);
+
+#if ECG_RP_DIAG
+/**
+ * @brief ★T226 P4-a：取「最近一次接受峰」的决策上下文（板端可观测）
+ *
+ * 为什么必须能看：T224 形态② 是**部分覆盖、静默选错极值** —— `found` 仍为 true、
+ *   `loc != trigger`，任何"精修率""loc==trigger 计数"都查不出来。
+ *   板端唯一能观测它的物理量就是 `win`（该次 locate 在窗口内真正扫到的样本数，
+ *   满窗 72）。没有这条命令，P4 再出同类问题还是只能拆 PC 抓包。
+ *
+ * @return false = 还没有接受过任何峰
+ */
+bool ecg_pipeline_last_diag(ecg_rp_diag_t *out);
+#endif
 
 /**
  * @brief 把回放峰序列同时**落盘**一份（`mit-run` 单条分析用）。

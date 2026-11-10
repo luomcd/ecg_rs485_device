@@ -1326,7 +1326,7 @@ static int cmd_rpeak(int argc, char **argv)
             printf("QRS 记录：off\n");
         }
         printf("峰序列格式：%s\n", ecg_pipeline_get_dump_wide() ? "wide（峰+±3 邻域）" : "compact（仅峰号）");
-        printf("用法: rpeak on|off | rpeak wide on|off | rpeak rec [30~600 s] | rpeak rec off\n");
+        printf("用法: rpeak on|off | rpeak wide on|off | rpeak diag | rpeak rec [30~600 s] | rpeak rec off\n");
         return 0;
     }
 
@@ -1353,6 +1353,28 @@ static int cmd_rpeak(int argc, char **argv)
                                         : "compact（每峰约 7 B）");
         return 0;
     }
+
+    /* ---- rpeak diag（★T226 P4-a）：最近一次接受峰的决策上下文 ---- */
+#if ECG_RP_DIAG
+    if (strcasecmp(argv[1], "diag") == 0) {
+        ecg_rp_diag_t d;
+        if (!ecg_pipeline_last_diag(&d)) {
+            printf("还没有接受过任何峰（等数据流起来再看）。\n");
+            return 0;
+        }
+        printf("最近一次接受峰：\n");
+        printf("  来源      : %s\n", d.src ? "回溯路径" : "主路径");
+        printf("  触发坐标  : %lld\n", (long long)d.trigger);
+        printf("  落点 fid  : %lld   (fid-trigger = %+lld)\n",
+               (long long)d.fid, (long long)(d.fid - d.trigger));
+        if (d.src) {
+            printf("  回溯滞后  : %lld 样本\n", (long long)d.lag);
+        }
+        printf("  窗口覆盖  : %d/72%s\n", (int)d.win,
+               d.win_short ? "  ⚠ 截断：部分覆盖会静默选错极值" : "  (满窗)");
+        return 0;
+    }
+#endif
 
     /* ---- rpeak rec / rpeak rec off ---- */
     if (strcasecmp(argv[1], "rec") == 0) {

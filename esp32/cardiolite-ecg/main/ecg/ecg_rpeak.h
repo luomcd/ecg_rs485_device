@@ -64,6 +64,36 @@
 #endif
 #define ECG_RP_AVG_RR_TAKE       5      /* BPM 取最近 5 个 RR */
 
+/* ============================================================================
+ * ★T224/T225（2026-11-10）：落点「双坐标」最小修复 —— 候选入池即保存 fid 偏移
+ *
+ * 问题（T224 §3）：回溯路径在**很晚**的时刻才调 `locate_rpeak(c->index)`，
+ *   此时 `[trigger±40]` 早已滑出 `filt_hist`（140）：
+ *     · 整个窗口滑出 ⇒ found=false ⇒ 原样返回 trigger（误差 ~9 样本）；
+ *     · 只有半边可见 ⇒ found=true 但在残缺窗口里挑极值（误差可达 ~27，且指标查不出来）。
+ *   实测 90 bpm 21 个回溯峰 100% 未精修、120 bpm 13 个部分覆盖。
+ *
+ * 修法：`locate_rpeak()` 在**候选入池那一刻**执行一次（此刻窗口覆盖与主路径完全相同），
+ *   把 `fid - trigger` 存进并列数组；回溯直接取用。**与心率无关**——不像加大
+ *   `ECG_RP_FILT_HIST` 那样，所需历史 ≈1.66×RR−80+41 会随心率线性增长
+ *   （60 bpm 要 ≥794、40 bpm 要 ≥1170，512 都不够）。
+ *
+ * 🛑 这是 **P3A 最小修复**，不是完整的双坐标重构（T225 §4.3）：
+ *   触发、`spacing`、不应期、候选筛选与删除**全部继续用 trigger**，
+ *   `last_peak` 的语义也**不变**。要彻底分坐标是 P3B，别在这里顺手改。
+ *
+ * 置 0 可编译出「现状基线」，用于逐峰证明主路径没被改动（T225 §5.2）。
+ * ========================================================================== */
+#ifndef ECG_RP_USE_STORED_FID
+#define ECG_RP_USE_STORED_FID    1
+#endif
+
+/* 诊断模式（T225 §6.3）：记录最近一次接受峰的触发/落点/滞后/窗宽/来源。
+ * 只写字段、不参与任何判据；默认开（20 B），置 0 可省。 */
+#ifndef ECG_RP_DIAG
+#define ECG_RP_DIAG              1
+#endif
+
 typedef struct {
     int64_t index;
     float   value;
@@ -74,6 +104,18 @@ typedef struct {
     float   value;
     float   slope;
 } ecg_rp_cand_t;
+
+#if ECG_RP_DIAG
+/** 最近一次「接受峰」的决策上下文（只读诊断，不参与判据） */
+typedef struct {
+    int64_t trigger;   /* 粗触发坐标（积分峰回退 30） */
+    int64_t fid;       /* 最终落点 */
+    int64_t lag;       /* 回溯触发时 trigger 距当前样本的滞后；主路径为 0 */
+    int16_t win;       /* 本次 locate 在窗口内真正扫到的样本数（满窗 72） */
+    int8_t  src;       /* 0 = 主路径，1 = 回溯路径 */
+    int8_t  win_short; /* 1 = 窗口不满（发生了截断） */
+} ecg_rp_diag_t;
+#endif
 
 typedef struct {
     uint32_t fs;
@@ -116,8 +158,21 @@ typedef struct {
 
     /* candidates（回溯搜索用） */
     ecg_rp_cand_t cand[ECG_RP_CAND_MAX];
+#if ECG_RP_USE_STORED_FID
+    /* 🛑 并列数组、不要塞进 ecg_rp_cand_t：结构体是 int64+float+float = 16 B，
+     *    塞一个 int16 会被 8 字节对齐撑到 24 B（64 项白涨 512 B）。
+     *    这里只涨 64×2 = 128 B，且不动原结构布局（T225 §4.1）。 */
+    int16_t  cand_fid_delta[ECG_RP_CAND_MAX];   /* fid - trigger */
+#if ECG_RP_DIAG
+    uint8_t  cand_win[ECG_RP_CAND_MAX];         /* 入池时窗口真正扫到的样本数（≤72） */
+#endif
+#endif
     int      cand_n;
     int      cand_pos;
+
+#if ECG_RP_DIAG
+    ecg_rp_diag_t last_diag;
+#endif
 
     /* 统计 */
     int64_t  sample_index;
@@ -150,3 +205,8 @@ int64_t ecg_rpeak_last_peak(const ecg_rpeak_t *rp);
 
 /** @brief 已处理样本数 */
 int64_t ecg_rpeak_sample_index(const ecg_rpeak_t *rp);
+
+#if ECG_RP_DIAG
+/** @brief 最近一次接受峰的决策上下文（诊断/回归用，不参与判据） */
+const ecg_rp_diag_t *ecg_rpeak_last_diag(const ecg_rpeak_t *rp);
+#endif

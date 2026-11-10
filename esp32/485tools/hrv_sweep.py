@@ -229,13 +229,6 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
         else:
             print("  ✓ 屏上 BPM=%.1f，与设定吻合（差 %.1f%%）" % (got, dev))
 
-    # 记录前先记下 SD 上现有数据的末峰号，用于事后校验「取回的是不是本轮数据」
-    # ⚠ ESP32 复位后 s_push_seq 归零，峰号会小于旧文件 ⇒ 校验会误判，
-    #    这种情况用 --no-prevcheck 跳过（此时只能靠「记录正常结束」这一条判据）。
-    pre_last = None
-    if prevcheck:
-        pre = dump_peaks(link)
-        pre_last = pre[-1] if pre else None
 
     print("  ▶ rpeak rec %d" % secs, flush=True)
     link.send("rpeak rec %d" % secs)
@@ -266,11 +259,17 @@ def one_round(link, bpm, secs, settle, idx, total, first_of_bpm=False,
         print("  ✗ 只解析到 %d 个峰，数据异常" % len(peaks))
         return None
 
-    # ★ 防呆：本轮数据的首峰必须晚于记录前那份的末峰，否则取回的是旧文件
-    if pre_last is not None and peaks[0] <= pre_last:
-        print("  ✗ 取回的是旧数据（首峰 %d ≤ 记录前末峰 %d）⇒ 本轮没落盘，作废" %
-              (peaks[0], pre_last))
-        return None
+    # ★ 防呆：用**跨度**校验，不用绝对峰号。
+    #   🛑 2026-11-09 踩过：绝对峰号会被 stop/start 重置（`s_push_seq` 归零），
+    #   旧文件末峰 2682629 > 新数据首峰 365625 ⇒ 把有效数据判成旧数据。
+    #   跨度与峰号基准无关：180 s @500 Hz 应约 90000 样本。
+    if prevcheck:
+        span = peaks[-1] - peaks[0]
+        exp = secs * fs
+        if span < exp * 0.85:
+            print("  ✗ 跨度只有 %.1f s（应约 %d s）⇒ 取回的是旧/不完整数据，作废"
+                  % (span / fs, secs))
+            return None
 
     path = os.path.join(OUT_DIR, "rpeak_hrv_%dbpm_%d.txt" % (bpm, idx_of(bpm, OUT_DIR) + 1))
     # 🛑 串口 dump 是 CRLF（ESP-IDF 控制台格式），项目约定纯 LF ⇒ 落盘前统一

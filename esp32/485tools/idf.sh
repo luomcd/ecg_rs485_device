@@ -22,5 +22,12 @@ export PATH="$TOOLS\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;$TOOLS\\cmake\
 
 PY="/c/Espressif/tools/python/v6.1/venv/Scripts/python.exe"
 
-/usr/bin/env "$PY" 'C:\work2026\CardioLite\tools\_idf_py.py' "$@"
+# 🛑 这里原来硬编码 `C:\work2026\CardioLite\tools\_idf_py.py`（老工程路径）。
+#    本项目搬过目录后，它会去编**另一个工程**，症状是"编完了但固件没变"。
+#    改成按脚本自身位置解析，任何目录下都能用。
+#    ⚠ 本脚本把 PATH 收窄成只剩 Espressif 工具链 + system32 ⇒ `dirname`/`cygpath`
+#      都**不存在**。只能用 bash 内建的参数展开与 `pwd -W`（MSYS 特有，直接给盘符路径）。
+IDF_PY_PY="$(cd "${BASH_SOURCE[0]%/*}" && pwd -W)/_idf_py.py"
+
+/usr/bin/env "$PY" "$IDF_PY_PY" "$@"
 exit $?

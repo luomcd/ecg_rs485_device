@@ -37,3 +37,9 @@ esp32/_build_*.log
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- 485tools 实验中间产物（可再生；证据 bin / _board_*.txt 仍入库） ---
+esp32/485tools/_rp_base/
+esp32/485tools/_rp_cmp/
+esp32/485tools/_rep*.csv
+esp32/485tools/_replay_*.csv
