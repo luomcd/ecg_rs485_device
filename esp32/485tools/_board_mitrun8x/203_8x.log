@@ -1,0 +1,31 @@
+mit-run 203 --speed 8
+数据文件: /sdcard/s7_batch/mit_203_500.bin
+BATCH-BEGIN total=1
+# CardioLite S3 replay: fs=500 Hz, file=mit_203_500.bin, speed=8x, 峰号=文件内相对样本号
+增益: 沿用当前档位 5.00 mm/mV
+回放中：波形在屏上；串口只打进度（每 5 万样本一行），完整峰序列写 SD 卡。
+结果文件: /sdcard/mit_203_result.txt（跑到 EOF 才有；中途 run-stop 不落盘）
+对账：把该文件拷到 PC，python tools/s3_verify_replay.py <文件>
+中途停止用 run-stop。
+cardiolite> 
+cardiolite> PROGRESS mit_203_500.bin samples=50000 peaks=174
+PROGRESS mit_203_500.bin samples=100000 peaks=342
+PROGRESS mit_203_500.bin samples=150000 peaks=491
+PROGRESS mit_203_500.bin samples=200000 peaks=647
+PROGRESS mit_203_500.bin samples=250000 peaks=815
+PROGRESS mit_203_500.bin samples=300000 peaks=977
+PROGRESS mit_203_500.bin samples=350000 peaks=1151
+PROGRESS mit_203_500.bin samples=400000 peaks=1341
+PROGRESS mit_203_500.bin samples=450000 peaks=1521
+PROGRESS mit_203_500.bin samples=500000 peaks=1680
+PROGRESS mit_203_500.bin samples=550000 peaks=1838
+PROGRESS mit_203_500.bin samples=600000 peaks=2009
+PROGRESS mit_203_500.bin samples=650000 peaks=2170
+PROGRESS mit_203_500.bin samples=700000 peaks=2317
+PROGRESS mit_203_500.bin samples=750000 peaks=2483
+PROGRESS mit_203_500.bin samples=800000 peaks=2633
+PROGRESS mit_203_500.bin samples=850000 peaks=2795
+PROGRESS mit_203_500.bin samples=900000 peaks=2946
+FILE mit_203_500.bin frames=36112 samples=902800 peaks=2953 bpm=65.9
+# dropped=0 speed=8 (逐位对账要求 dropped=0)
+# 完整峰序列已写入 /sdcard/mit_203_result.txt（20855 B）

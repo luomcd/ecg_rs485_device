@@ -74,7 +74,9 @@ def main():
     ap.add_argument("--secs", type=int, default=180)
     ap.add_argument("--out", required=True, help="峰序列回传保存路径")
     ap.add_argument("--no-restart", action="store_true")
-    ap.add_argument("--dump-only", action="store_true", help="只把 SD 上的 rpeak_hrv.txt 拉回来")
+    ap.add_argument("--dump-only", action="store_true", help="只把 SD 上的结果文件拉回来")
+    ap.add_argument("--stem", default="rpeak_hrv.txt",
+                    help="配合 --dump-only：要回传的 SD 文件名，如 batch_mit_result.txt / mit_108_result.txt")
     ap.add_argument("--fmt", choices=["compact", "wide"], default="compact",
                     help="峰序列格式；compact 只有峰号（落盘行数少、不易丢行），wide 带 ±3 邻域")
     a = ap.parse_args()
@@ -82,7 +84,7 @@ def main():
     if a.dump_only:
         e = EspPort(a.port)
         time.sleep(0.5)
-        data = dump_file(e, "rpeak_hrv.txt")
+        data = dump_file(e, a.stem)
         with open(a.out, "w", encoding="utf-8", newline="\n") as f:
             f.write(data)
         print("%s（%d 字符）" % (a.out, len(data)))

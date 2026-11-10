@@ -45,12 +45,38 @@ def read_truth(path):
 
 
 def read_peaks(path):
+    """读峰序列。**四种格式都能直接吃**（2026-11-10 扩）：
+
+    1. `index,time_s`（rpeak_host / WinApp 导出，逐行一个峰）
+    2. 纯索引逐行（`12345`）
+    3. **`P 12345 12380 …`**（板端 batch / `rpeak rec` / `mit-run` 的结果文件，16 峰一行）
+    4. **`W 12345 v-3 … v+3`**（板端 `rpeak wide on` 的宽格式，取第 2 列）
+
+    🛑 为什么要扩：板端结果文件里除 `P` 行还夹着 `BATCH-BEGIN` / `FILE …` / `# …`
+       这些行，旧实现会把它们丢给 `int()` → 直接 ValueError。
+       于是"板上跑完 → 直接喂本脚本"这条路走不通，只能先手工转一道格式。
+    """
     out = []
     for line in open(path, encoding="utf-8"):
         line = line.strip()
-        if not line or line.startswith("#") or line.startswith("index"):
+        if not line or line.startswith("#"):
             continue
-        out.append(int(line.split(",")[0]))
+        head = line.split()[0]
+        if head in ("P", "W"):                      # 板端 16 峰/行 或宽格式
+            toks = line.split()[1:]
+            if head == "W":
+                toks = toks[:1]                     # 宽格式只取峰号，后面是 ±3 原始值
+            out.extend(int(t) for t in toks)
+            continue
+        if head.startswith("index") or head in ("BATCH-BEGIN", "BATCH-END", "FILE", "PROGRESS"):
+            continue
+        # 🛑 最后一层容错：串口抓下来的文件**首行是命令回显**（`result-dump xxx.txt`）、
+        #    末行是 `cardiolite>` 提示符，直接 int() 会炸。凡是解析不出数字的行一律跳过，
+        #    不做白名单 —— 白名单永远漏（下次换个命令回显就又不认识了）。
+        try:
+            out.append(int(line.split(",")[0]))
+        except ValueError:
+            continue
     return sorted(out)
 
 
