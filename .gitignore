@@ -49,3 +49,6 @@ esp32/485tools/_rp_base/
 esp32/485tools/_rp_cmp/
 esp32/485tools/_rep*.csv
 esp32/485tools/_replay_*.csv
+
+# --- MIT-BIH 峰序列缓存（96 份，可由 rpeak_host 重生成；汇总 CSV 仍入库） ---
+esp32/485tools/_mitcmp/peaks/
