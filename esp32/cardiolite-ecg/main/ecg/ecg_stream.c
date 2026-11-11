@@ -4,6 +4,13 @@
  */
 
 #include "ecg_stream.h"
+#include "esp_log.h"
+
+/* ★临时诊断（2026-11-11，定位 STM32 `start FAIL` 回显用）：把重同步阶段的
+ * 前 100 个字节按 hex+可打印字符打出来。**定位完必须删掉这段**（含本宏）。 */
+#ifndef ECG_STREAM_DBG_BYTES
+#define ECG_STREAM_DBG_BYTES   1
+#endif
 
 #include <string.h>
 
@@ -46,6 +53,15 @@ bool ecg_stream_feed(ecg_stream_t *st, uint8_t byte, ecg_frame_t *out)
     if (st == NULL || out == NULL) {
         return false;
     }
+
+#if ECG_STREAM_DBG_BYTES
+    if (st->resync_bytes < 100u) {
+        ESP_LOGW("ecg_stream", "byte=0x%02X '%c' state=%u got=%u rsync=%u",
+                 (unsigned)byte,
+                 (byte >= 0x20u && byte < 0x7Fu) ? (char)byte : '.',
+                 (unsigned)st->state, (unsigned)st->got, (unsigned)st->resync_bytes);
+    }
+#endif
 
     switch (st->state) {
     case 0: /* 找第一个同步字节 AA */
