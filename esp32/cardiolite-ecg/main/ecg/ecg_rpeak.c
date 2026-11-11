@@ -169,11 +169,37 @@ static void accept_peak(ecg_rpeak_t *rp, int64_t peak, float value, float slope,
  * 公开接口
  * ========================================================================== */
 
+/* ============================================================================
+ * ★T229-B：统一的阈值计算（含绝对下限）
+ *
+ * 🛑 三处入口**必须**共用本函数：
+ *    ①主路径接受（ratio=0.25）②候选入池（0.5）③回溯接受（0.5）。
+ *    只给①加下限的话，弱噪声峰仍会经②进池、再由③捞回打点（T230 §2.1/§7.1）。
+ *
+ * 量级关系（稳态 signal_peak≈10⁵、noise≈10、thr_floor≈1,720）：
+ *    0.25 比例 ≈ 25,000、0.5 比例 ≈ 50,000 —— 都远高于 thr_floor，
+ *    所以**正常心电时 thr_floor 不生效**；它只在 signal_peak 尚未建立
+ *    （无信号 / 刚清零）时兜底。
+ * ========================================================================== */
+static float effective_threshold(const ecg_rpeak_t *rp, float ratio)
+{
+    const float adaptive = rp->noise_peak + ratio * (rp->signal_peak - rp->noise_peak);
+    const float t        = (adaptive > rp->thr_floor) ? adaptive : rp->thr_floor;
+    return (t > TINY) ? t : TINY;
+}
+
 void ecg_rpeak_init(ecg_rpeak_t *rp, uint32_t fs)
 {
     memset(rp, 0, sizeof(*rp));
     rp->fs        = fs;
     rp->last_peak = NO_PEAK;
+
+    /* ★T229-B：把"等效 µV 幅度"换算成积分域下限（只在这里算一次，别每样本换算）。
+     * integ ≈ k_int × A²(LSB)，A(LSB) = µV / UV_PER_LSB ⇒ 平方后乘 k_int。 */
+    {
+        const float a_lsb = ECG_RP_THR_FLOOR_UV / ECG_RP_UV_PER_LSB;
+        rp->thr_floor = ECG_RP_K_INT * a_lsb * a_lsb;
+    }
 }
 
 void ecg_rpeak_reset(ecg_rpeak_t *rp)
@@ -232,14 +258,13 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
         const float prev_integ   = rp->integ_p1;
         const float prevprev_integ = rp->integ_p2;
 
-        const float threshold = fmaxf(TINY,
-                                      rp->noise_peak + 0.25f * (rp->signal_peak - rp->noise_peak));
+        const float threshold = effective_threshold(rp, 0.25f);
 
         if (prev_integ >= prevprev_integ && prev_integ > integrated) {
             /* 积分峰对应到滤波信号的峰：回退 1 + 半个积分窗 */
             const int64_t peak  = rp->sample_index - 1 - ECG_RP_INTEG_WIN / 2;
             const float   slope = fabsf(rp->deriv_p1);
-            const float   sec_thr = rp->noise_peak + 0.5f * (rp->signal_peak - rp->noise_peak);
+            const float   sec_thr = effective_threshold(rp, 0.5f);
 
             /* ★T225 §4.2：落点只在**候选入池那一刻**算一次，主路径直接复用。
              *   🛑 不能写“主路径另调一次 locate_rpeak”——那就是两套解析，
@@ -249,7 +274,7 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
             bool    fid_ready = false;
 
             /* 候选池（回溯搜索用） */
-            if (prev_integ > fmaxf(TINY, sec_thr)) {
+            if (prev_integ > sec_thr) {
 #if ECG_RP_USE_STORED_FID
                 fid_now   = locate_rpeak(rp, peak, &win_now);
                 fid_ready = true;
@@ -331,7 +356,7 @@ bool ecg_rpeak_process(ecg_rpeak_t *rp, float sample, int64_t *out_index)
             if (best_k >= 0) {
                 const int cslot = (cfirst + best_k) % ECG_RP_CAND_MAX;
                 const ecg_rp_cand_t *c = &rp->cand[cslot];
-                const float need = rp->noise_peak + 0.5f * (rp->signal_peak - rp->noise_peak);
+                const float need = effective_threshold(rp, 0.5f);
                 if (c->value > need) {
                     int64_t fid;
                     int     win = 0;
