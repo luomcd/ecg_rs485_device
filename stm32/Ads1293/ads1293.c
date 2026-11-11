@@ -471,6 +471,15 @@ static void ads1293_conversion_run(bool bstart)
     else{
         demo_ads1293_stop();
         ads1293_write_reg(TI_ADS1293_CONFIG_REG, 0x02);
+        /* ★T229-A 验证（2026-11-11）：写 CONFIG=0x02(STOP) 后必须给芯片生效时间。
+         * 现象：START 约 50% 随机失败，回显 `start FAIL: idx=1 reg=0x00 want=0x00 got=0x01`
+         *   （63 B 单数字 idx 正好对应第 1 条寄存器 CONFIG）。
+         * 推断：本步 0x02 尚未生效（芯片仍在 RUN=0x01）时，随后写表第一条 CONFIG=0x00
+         *   会被忽略 ⇒ 读回 0x01 ≠ 0x00 ⇒ 校验失败在 idx=1；
+         *   而 write_table 的重试只重写 0x00、**不重发 0x02**，所以重试必然也失败
+         *   （与实测"double-start 一定无效"吻合）。
+         * 本步只加 1 ms 生效时间做 A 验证；若有效再上 B（回读确认 CONFIG==0x02 带重试）。 */
+        HAL_Delay(1);
         queue_reset(&EcgQueueRaw);
     }
 }
