@@ -161,6 +161,17 @@ void     ads1293_set_ch2(uint32_t on);
 uint32_t ads1293_ch2_is_on(void);
 uint8_t  ads1293_status_byte(void);
 
+/* ---- ★T232（2026-11-11）LOD 锁存状态机 ----------------------------------
+ * 手册 §8.3.24：0x18~0x1E 的错误位是「锁存 + 读后清零」⇒ 逐样本读会把锁存吃掉。
+ * 因此改为低频轮询 + 软件锁存 + 非对称防抖。
+ *   ads1293_lod_poll()   主循环每轮调用（内部 20 ms 自节流）
+ *   ads1293_lod_stable() 防抖后的脱落位：bit0=IN1 / bit1=IN2 / bit2=IN3
+ *   ads1293_lod_raw()    最近一次原始读值（诊断用）
+ * 对外语义（STATUS.bit4）= **任意输入脱落**（完整性提示），不等于"QRS 通道无效"。 */
+void    ads1293_lod_poll(void);
+uint8_t ads1293_lod_stable(void);
+uint8_t ads1293_lod_raw(void);
+
 /* ---- ★T163（2026-09-29）ASCII 精简档 `ascii-2`（命令 `test ascii-2`）----------
  * 依据猛哥 2026-09-29 对 T162 §八 五问的拍板（α 方案 + ③⑥改开关 + ①默认不输出
  * + 批次用命令调 + ⑤改定点）。`ascii-1`（7 列）**一字不改** ⇒ 41 个「7 列」硬门

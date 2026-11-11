@@ -136,6 +136,7 @@ void demo_ads1293(void)
     while(1)
     {
         vcom_recv_analysis();
+        ads1293_lod_poll();      /* ★T232：LOD 低频轮询（内部 20 ms 自节流，未到周期立即返回） */
        
         bool bconvstart = _bconvstart;
         bool bconvint = _bconvint;

@@ -8,7 +8,13 @@
 #include "ecg_dc_block.h"
 #include "ecg_crc8.h"
 
-#define ECG_LOD_EN            0 
+/* ★T232（2026-11-11）：LOD 首次启用（台架阶段）。
+ * 开关值 → regs_leaderIII 的 #if 分支：0x06=0x00(DC 工作) / 0x07=0x07(IN1~IN3) / 0x08=0x01(8 nA)。
+ * 🛑 不用 T215 当年的 0x07=0x0F / 0x08=0xFF：
+ *    · 0x0F 含 IN4 —— IN4 是 RLD 输出点（0x0C=0x04 ⇒ SELRLD=100），对它做脱落检测无意义且扰动 RLD 环路；
+ *    · 0xFF = 2.04 µA/路，三路合计 6.12 µA（±25% 最坏 7.65 µA），患者辅助电流余量太小；改 8 nA 起步。
+ * 见 docs/T232 §15.3。 */
+#define ECG_LOD_EN            1 
 
 #if 0
 #define  ASCII_TYPE           0
@@ -334,9 +340,9 @@ const uint8_t regs_leaderIII[][2] =
     {0x04, 0x00},
     {0x05, 0x00},
 #if ECG_LOD_EN   
-    {0x06, 0x00},
-    {0x07, 0x0f},
-    {0x08, 0xff},
+    {0x06, 0x00},   /* LOD_CN：SHDN_LOD=0 工作 / SELAC_LOD=0 DC 模式 / ACLVL=00 */
+    {0x07, 0x07},   /* LOD_EN：IN1+IN2+IN3（★不是 0x0F —— IN4 是 RLD 输出点，不得使能） */
+    {0x08, 0x01},   /* LOD_CURRENT：8 nA 起步（不是 0xFF=2.04 µA） */
 #else
     {0x06, 0x08},
     {0x07, 0x00},
@@ -423,6 +429,93 @@ const uint8_t regs_shorted[][2] =
 /* ---- G5(2026-09-23)：滤波链软件复位内核（待拍②：抽共用内核）---------------------
  * 抽出来的理由：conversion(true) 与 ads1293_reset_afe() 都要把滤波链清回初值；
  * 若各写一遍，日后改一处必漏另一处。⚠ 本函数**只做初值**，不含启停与 CONFIG 写。 */
+/* ============================================================================
+ * ★T232-2-2 / 2-3（2026-11-11）：LOD 锁存状态机（低频读 + 软件锁存 + 非对称防抖）
+ *
+ * 为什么不能逐样本读：手册 §8.3.24 —— 寄存器 0x18~0x1E 的错误位是
+ *   **锁存 + 读后清零**（"will only return to zero after being read"）。
+ *   原实现把 `0x18` 放在 DRDY 每样本路径里读（旧 `ads1293_raw_enqueue`），
+ *   ⇒ 锁存被逐样本消耗 ⇒ 单样本读到 0 不能证明"没脱落"，上层也拿不到"曾经发生"。
+ *
+ * 本实现：
+ *   · **低频读**：`ads1293_lod_poll()` 每 20 ms 读一次（主循环调用，内部按 tick 自节流）；
+ *   · **软件锁存**：读到非零就按位记住（`s_lod_latched |= raw`）；
+ *   · **非对称防抖**：连续 N 次非零才置位（60 ms），连续 M 次全零才清除（500 ms），M > N；
+ *   · 清除只由"**持续**无故障"驱动，**不由单次读到 0** 驱动；
+ *   · SPI 读失败时**保持现状**（不清不置）。
+ *
+ * 🛑 芯片硬件层 ALARM_FILTER 只有 µs 级（409.6 kHz × 1~16 次 ≈ 2.4~39 µs），
+ *    对人体/运动伪迹等于没有 ⇒ 软件防抖必需（T233 P1-2）。
+ * ========================================================================== */
+#define LOD_POLL_MS      20u    /* 读取周期 */
+#define LOD_ASSERT_CNT    3u    /* 连续 3 次(≥60 ms) 非零 ⇒ 置位 */
+#define LOD_CLEAR_CNT    25u    /* 连续 25 次(≥500 ms) 全零 ⇒ 清除（> assert，非对称） */
+
+static uint8_t  s_lod_raw;
+static uint8_t  s_lod_latched;
+static uint8_t  s_lod_stable;
+static uint16_t s_lod_assert_cnt;
+static uint16_t s_lod_clear_cnt;
+static uint32_t s_lod_last_ms;
+
+static void ads1293_lod_state_reset(void)
+{
+    s_lod_raw = 0u;
+    s_lod_latched = 0u;
+    s_lod_stable = 0u;
+    s_lod_assert_cnt = 0u;
+    s_lod_clear_cnt = 0u;
+    s_lod_last_ms = 0u;
+}
+
+/** @brief 每 20 ms 调一次（主循环里调，内部自节流）。 */
+void ads1293_lod_poll(void)
+{
+    const uint32_t now = HAL_GetTick();
+    if ((uint32_t)(now - s_lod_last_ms) < LOD_POLL_MS) {
+        return;
+    }
+    s_lod_last_ms = now;
+
+    uint8_t raw = 0u;
+    if (ads1293_read_reg(TI_ADS1293_ERROR_LOD_REG, &raw) != HAL_OK) {
+        return;                 /* SPI 失败：保持现状 */
+    }
+    s_lod_raw = raw;
+
+    if (raw != 0u) {
+        s_lod_latched |= raw;   /* ★读后清零 ⇒ 必须自己锁存 */
+        s_lod_clear_cnt = 0u;
+        if (s_lod_assert_cnt < LOD_ASSERT_CNT) {
+            s_lod_assert_cnt++;
+        }
+        if (s_lod_assert_cnt >= LOD_ASSERT_CNT) {
+            s_lod_stable = s_lod_latched;
+        }
+    } else {
+        s_lod_assert_cnt = 0u;
+        if (s_lod_clear_cnt < LOD_CLEAR_CNT) {
+            s_lod_clear_cnt++;
+        }
+        if (s_lod_clear_cnt >= LOD_CLEAR_CNT) {
+            s_lod_latched = 0u; /* ★只有"持续无故障"才清锁存 */
+            s_lod_stable  = 0u;
+        }
+    }
+}
+
+/** @brief 防抖后的脱落位（bit0=IN1 … bit2=IN3）。 */
+uint8_t ads1293_lod_stable(void)
+{
+    return s_lod_stable;
+}
+
+/** @brief 最近一次原始读值（诊断用）。 */
+uint8_t ads1293_lod_raw(void)
+{
+    return s_lod_raw;
+}
+
 static void ads1293_filter_chain_init(void)
 {
     //ecg_filter_f32_init(&f32);
@@ -440,6 +533,9 @@ static void ads1293_filter_chain_init(void)
      *   ⚠ 本值同时决定 **620 kΩ 建场/恢复时间**（τ = 1/(2π·f_min)），与 a1 是两个指标。 */
     ecg_dc_block_init(&g_dc, ECG_DC_BLOCK_FC_HZ_F);
     ecg_filter_f64_init(&f64);
+
+    /* ★T232：每次（重新）起流把 LOD 状态机清零 —— 脱落状态属于"本次连接"，不跨段沿用 */
+    ads1293_lod_state_reset();
     ecg_out_f32_init(&out);
     ecg_restore_start();   /* ★T146：复位 fast_restore_snippet.c 的 5 个 static + 装载 START 静默窗。
                             *   它虽是独立编译单元，但在 dc_block **上游** ⇒ 残值同样跨 STOP 存活，
@@ -1011,7 +1107,9 @@ void ads1293_raw_queueinit(void)
 void ads1293_raw_enqueue(uint32_t idx)
 {
     ecg_data_t ecgraw;
-    ads1293_read_reg(TI_ADS1293_ERROR_LOD_REG, &ecgraw.lod);
+    /* ★T232-2-3：**不再逐样本读 0x18**（每次读都会清锁存）。
+     * 改用低频轮询 + 软件锁存后的稳定态；ASCII 列⑦的 lod 语义变为"防抖后的脱落位"。 */
+    ecgraw.lod = s_lod_stable;
     ads1293_read_reg(TI_ADS1293_ERROR_STATUS_REG, &ecgraw.errsta);
     ads1293_ecg_ch(&ecgraw.ecgraw, &ecgraw.ecgraw2);
     ecgraw.idx = idx;
@@ -1218,7 +1316,13 @@ uint8_t ads1293_status_byte(void)
     if (ads1293_raw853_is_on()) {
         sta |= 0x08u;   /* bit3 raw853 */
     }
-    /* bit4 LOD：恒 0（ECG_LOD_EN=0 ⇒ 未使能，协议 §4 硬约束 2） */
+    /* ★T232：bit4 = **任意输入脱落**（完整性提示；猛哥 2026-11-11 17:24 定语义）。
+     * 数据源 = 低频轮询 + 软件锁存 + 非对称防抖后的 `s_lod_stable`。
+     * ⚠ 它表达"任一路脱落"，**不等于"当前 QRS 通道无效"**——
+     *    QRS 门控应另判 `CH1 invalid = IN1 off || IN2 off`（见 T232 §15.2）。 */
+    if (s_lod_stable != 0u) {
+        sta |= 0x10u;
+    }
 
     return sta;
 }
