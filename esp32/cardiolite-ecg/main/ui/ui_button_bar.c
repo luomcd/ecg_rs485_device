@@ -141,10 +141,15 @@ void ui_clear_apply(void)
     if (!app_action_clear()) {
         return;         /* 无文件 ⇒ 与屏上灰键一致：什么都不做 */
     }
-    ui_waveform_clear();
+    ui_waveform_clear();            /* 清波形 + 已绘制的 R 峰标记（纯视觉） */
     ui_waveform_set_frozen(false);
-    ecg_pipeline_rpeak_reset();     /* §8.4：清 R 峰队列 */
-    ui_bpm_reset();                 /* §8.4：BPM 归 `--` */
+    /* ★A-clear（T230 批准，2026-11-11）：清屏**只清视觉**，不再复位检测器与 BPM。
+     *
+     * 原实现调用 `ecg_pipeline_rpeak_reset()` + `ui_bpm_reset()`，实际后果：
+     *   · `peaks` / `fed` 计数归零、epoch 递增 ⇒ 测量期间计数器被"无故清掉"
+     *     （11-11 实测踩过：Δpeaks 出现负数，密度算出假值）；
+     *   · BPM 回到 `--` 重新收敛 ⇒ 与 T212「清屏＝纯视觉」的语义不符。
+     * 需要真正复位时用 `rpeak reset` 命令（显式、可追溯到操作者）。 */
     ui_button_bar_refresh();        /* 冻结态被解除 ⇒ 冻结键文字要跟着变回「冻结」 */
 }
 

@@ -9,7 +9,7 @@
 /* ★临时诊断（2026-11-11，定位 STM32 `start FAIL` 回显用）：把重同步阶段的
  * 前 100 个字节按 hex+可打印字符打出来。**定位完必须删掉这段**（含本宏）。 */
 #ifndef ECG_STREAM_DBG_BYTES
-#define ECG_STREAM_DBG_BYTES   1
+#define ECG_STREAM_DBG_BYTES   0   /* 默认关：需要抓重同步字节时置 1 重编 */
 #endif
 
 #include <string.h>

@@ -1326,7 +1326,16 @@ static int cmd_rpeak(int argc, char **argv)
             printf("QRS 记录：off\n");
         }
         printf("峰序列格式：%s\n", ecg_pipeline_get_dump_wide() ? "wide（峰+±3 邻域）" : "compact（仅峰号）");
-        printf("用法: rpeak on|off | rpeak wide on|off | rpeak diag | rpeak rec [30~600 s] | rpeak rec off\n");
+        printf("用法: rpeak on|off | rpeak wide on|off | rpeak diag | rpeak reset | rpeak rec [30~600 s] | rpeak rec off\n");
+        return 0;
+    }
+
+    /* ---- rpeak reset（★A-clear 配套，2026-11-11）----
+     * 清屏不再复位检测器（见 ui_button_bar.c::ui_clear_apply 的 A-clear 注释），
+     * 需要"从零开始"时用本命令：epoch 递增 ⇒ UI 旧标记作废、BPM 归 `--`、峰计数清零。 */
+    if (strcasecmp(argv[1], "reset") == 0) {
+        ecg_pipeline_rpeak_reset();
+        printf("R 峰检测器已复位：epoch 递增、峰计数清零、BPM 归 `--`\n");
         return 0;
     }
 
