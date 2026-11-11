@@ -1,0 +1,241 @@
+I (1431784) ui_wave: fps=13.9  render=26004 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1432337) ui_bpm: bpm -> 270
+I (1433626) ui_bpm: bpm -> 268
+I (1433798) ui_wave: fps=13.8  render=25369 us  dt=[65,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1434489) ui_bpm: bpm -> 273
+I (1434916) ui_bpm: bpm -> 188
+I (1435138) ui_bpm: bpm -> 273
+I (1435781) ui_bpm: bpm -> 313
+I (1435807) ui_wave: fps=13.9  render=26073 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1435999) ecg_pipe: t=15 s | 485 rx=17700 B frames=300 crc=0 resync=0 gaps=1 | pushed=7500 dropped=0 bpm=312.5
+I (1436210) ui_bpm: bpm -> 182
+I (1436642) ui_bpm: bpm -> 233
+I (1437811) ui_wave: fps=13.9  render=25271 us  dt=[63,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1438149) ui_bpm: bpm -> 211
+I (1438581) ui_bpm: bpm -> 199
+I (1439823) ui_wave: fps=13.9  render=25379 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1440302) ui_bpm: bpm -> 176
+I (1440951) ui_bpm: bpm -> 172
+I (1441049) ecg_pipe: t=20 s | 485 rx=23659 B frames=401 crc=0 resync=0 gaps=1 | pushed=10025 dropped=0 bpm=250.0
+I (1441163) ui_bpm: bpm -> 250
+I (1441380) ui_bpm: bpm -> 222
+I (1441835) ui_wave: fps=13.9  render=25380 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1443099) ui_bpm: bpm -> 203
+I (1443842) ui_wave: fps=13.9  render=25399 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1443956) ui_bpm: bpm -> 135
+I (1444173) ui_bpm: bpm -> 203
+I (1444389) ui_bpm: bpm -> 236
+I (1444820) ui_bpm: bpm -> 250
+I (1445845) ui_wave: fps=13.9  render=25222 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1446048) ecg_pipe: t=25 s | 485 rx=29559 B frames=501 crc=0 resync=0 gaps=1 | pushed=12525 dropped=0 bpm=204.1
+I (1446106) ui_bpm: bpm -> 204
+I (1447182) ui_bpm: bpm -> 224
+I (1447822) ui_bpm: bpm -> 180
+I (1447848) ui_wave: fps=13.9  render=25279 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1448466) ui_bpm: bpm -> 168
+I (1449539) ui_bpm: bpm -> 233
+I (1449850) ui_wave: fps=13.9  render=26123 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1450834) ui_bpm: bpm -> 197
+I (1451098) ecg_pipe: t=30 s | 485 rx=35518 B frames=602 crc=0 resync=0 gaps=1 | pushed=15050 dropped=0 bpm=319.1
+I (1451269) ui_bpm: bpm -> 319
+I (1451487) ui_bpm: bpm -> 291
+I (1451869) ui_wave: fps=13.8  render=25621 us  dt=[65,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1451918) ui_bpm: bpm -> 224
+I (1452995) ui_bpm: bpm -> 211
+I (1453213) ui_bpm: bpm -> 216
+I (1453649) ui_bpm: bpm -> 244
+I (1453893) ui_wave: fps=13.8  render=25540 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1454084) ui_bpm: bpm -> 238
+I (1454515) ui_bpm: bpm -> 244
+I (1454943) ui_bpm: bpm -> 261
+I (1455898) ui_wave: fps=13.9  render=25965 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1455997) ecg_pipe: t=35 s | 485 rx=41300 B frames=700 crc=0 resync=0 gaps=1 | pushed=17500 dropped=0 bpm=260.9
+I (1456449) ui_bpm: bpm -> 214
+I (1456875) ui_bpm: bpm -> 207
+I (1457095) ui_bpm: bpm -> 214
+I (1457739) ui_bpm: bpm -> 263
+I (1457911) ui_wave: fps=13.9  render=25563 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1458383) ui_bpm: bpm -> 300
+I (1458812) ui_bpm: bpm -> 270
+I (1459913) ui_wave: fps=13.9  render=25530 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1461047) ecg_pipe: t=40 s | 485 rx=47259 B frames=801 crc=0 resync=0 gaps=1 | pushed=20025 dropped=0 bpm=270.3
+I (1461828) ui_bpm: bpm -> --
+I (1461928) ui_wave: fps=13.8  render=25565 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1463932) ui_wave: fps=13.9  render=25202 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1465994) ui_wave: fps=14.0  render=26016 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1466046) ecg_pipe: t=45 s | 485 rx=53159 B frames=901 crc=0 resync=0 gaps=1 | pushed=22525 dropped=0 bpm=270.3
+I (1468064) ui_wave: fps=14.0  render=25506 us  dt=[63,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1470132) ui_wave: fps=14.0  render=25456 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1470606) ui_bpm: bpm -> 270
+I (1471045) ecg_pipe: t=50 s | 485 rx=59059 B frames=1001 crc=0 resync=0 gaps=1 | pushed=25025 dropped=0 bpm=270.3
+I (1472136) ui_wave: fps=13.9  render=25782 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1474155) ui_wave: fps=13.8  render=25596 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1475136) ui_bpm: bpm -> --
+I (1476095) ecg_pipe: t=55 s | 485 rx=65018 B frames=1102 crc=0 resync=0 gaps=1 | pushed=27550 dropped=0 bpm=270.3
+I (1476167) ui_wave: fps=13.9  render=25897 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1478184) ui_wave: fps=13.8  render=25727 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1480200) ui_wave: fps=13.8  render=25642 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1480994) ecg_pipe: t=60 s | 485 rx=70800 B frames=1200 crc=0 resync=0 gaps=1 | pushed=30000 dropped=0 bpm=270.3
+I (1482206) ui_wave: fps=13.9  render=25577 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1484213) ui_wave: fps=13.9  render=26262 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1486044) ecg_pipe: t=65 s | 485 rx=76759 B frames=1301 crc=0 resync=0 gaps=1 | pushed=32525 dropped=0 bpm=270.3
+I (1486226) ui_wave: fps=13.9  render=25463 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1488232) ui_wave: fps=13.9  render=25643 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1490245) ui_wave: fps=13.9  render=25462 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1491043) ecg_pipe: t=70 s | 485 rx=82659 B frames=1401 crc=0 resync=0 gaps=1 | pushed=35025 dropped=0 bpm=270.3
+I (1492252) ui_wave: fps=13.9  render=25421 us  dt=[65,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1494258) ui_wave: fps=13.9  render=26077 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1496093) ecg_pipe: t=75 s | 485 rx=88618 B frames=1502 crc=0 resync=0 gaps=1 | pushed=37550 dropped=0 bpm=270.3
+I (1496271) ui_wave: fps=13.9  render=25416 us  dt=[66,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1498274) ui_wave: fps=13.9  render=25423 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1500344) ui_wave: fps=14.0  render=25542 us  dt=[63,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1501092) ecg_pipe: t=80 s | 485 rx=94518 B frames=1602 crc=0 resync=0 gaps=1 | pushed=40050 dropped=0 bpm=270.3
+I (1502408) ui_wave: fps=14.0  render=25252 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1504474) ui_wave: fps=14.0  render=24925 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1506042) ecg_pipe: t=85 s | 485 rx=100359 B frames=1701 crc=0 resync=0 gaps=1 | pushed=42525 dropped=0 bpm=270.3
+I (1506530) ui_wave: fps=14.1  render=25347 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1506724) ui_bpm: bpm -> 270
+I (1508229) ui_bpm: bpm -> 205
+I (1508549) ui_wave: fps=13.8  render=25818 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1510556) ui_wave: fps=13.9  render=26503 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1511041) ecg_pipe: t=90 s | 485 rx=106259 B frames=1801 crc=0 resync=0 gaps=1 | pushed=45025 dropped=0 bpm=205.5
+I (1511253) ui_bpm: bpm -> --
+I (1512576) ui_wave: fps=13.8  render=25669 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1514577) ui_wave: fps=13.9  render=25454 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1516039) ecg_pipe: t=95 s | 485 rx=112159 B frames=1901 crc=0 resync=0 gaps=1 | pushed=47525 dropped=0 bpm=205.5
+I (1516577) ui_wave: fps=13.9  render=25894 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1518650) ui_wave: fps=13.9  render=25421 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1520652) ui_wave: fps=13.9  render=26014 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1521090) ecg_pipe: t=100 s | 485 rx=118118 B frames=2002 crc=0 resync=0 gaps=1 | pushed=50050 dropped=0 bpm=205.5
+I (1522722) ui_wave: fps=14.0  render=25380 us  dt=[63,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1524795) ui_wave: fps=13.9  render=25432 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1526089) ecg_pipe: t=105 s | 485 rx=124018 B frames=2102 crc=0 resync=0 gaps=1 | pushed=52550 dropped=0 bpm=205.5
+I (1526796) ui_wave: fps=13.9  render=25241 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1528855) ui_wave: fps=14.0  render=25436 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1530924) ui_wave: fps=14.0  render=25318 us  dt=[63,73] ms  samples=5000  gain=5.0  speed=25.0
+I (1530989) ecg_pipe: t=110 s | 485 rx=129800 B frames=2200 crc=0 resync=0 gaps=1 | pushed=55000 dropped=0 bpm=205.5
+I (1532990) ui_wave: fps=14.0  render=25091 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1535053) ui_wave: fps=14.0  render=26034 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1536038) ecg_pipe: t=115 s | 485 rx=135759 B frames=2301 crc=0 resync=0 gaps=1 | pushed=57525 dropped=0 bpm=205.5
+I (1537052) ui_wave: fps=13.9  render=25385 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1539124) ui_wave: fps=13.9  render=25352 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1541037) ecg_pipe: t=120 s | 485 rx=141659 B frames=2401 crc=0 resync=0 gaps=1 | pushed=60025 dropped=0 bpm=205.5
+I (1541126) ui_wave: fps=13.9  render=25994 us  dt=[65,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1541459) ui_bpm: bpm -> 205
+I (1543134) ui_wave: fps=13.9  render=25569 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1544472) ui_bpm: bpm -> --
+I (1545142) ui_wave: fps=13.9  render=25621 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1546087) ecg_pipe: t=125 s | 485 rx=147618 B frames=2502 crc=0 resync=0 gaps=1 | pushed=62550 dropped=0 bpm=205.5
+I (1547148) ui_wave: fps=13.9  render=26127 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1549148) ui_wave: fps=13.9  render=25251 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1551037) ecg_pipe: t=130 s | 485 rx=153459 B frames=2601 crc=0 resync=0 gaps=1 | pushed=65025 dropped=0 bpm=205.5
+I (1551155) ui_wave: fps=13.9  render=25261 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1553218) ui_wave: fps=14.0  render=25391 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1555220) ui_wave: fps=13.9  render=26065 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1556136) ecg_pipe: t=135 s | 485 rx=159477 B frames=2703 crc=0 resync=0 gaps=1 | pushed=67575 dropped=0 bpm=205.5
+I (1557286) ui_wave: fps=14.0  render=25155 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1557758) ui_bpm: bpm -> 205
+I (1558830) ui_bpm: bpm -> 60
+I (1559290) ui_wave: fps=13.9  render=25786 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1561034) ecg_pipe: t=140 s | 485 rx=165259 B frames=2801 crc=0 resync=0 gaps=1 | pushed=70025 dropped=0 bpm=59.9
+I (1561320) ui_wave: fps=13.8  render=26259 us  dt=[65,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1563364) ui_wave: fps=13.6  render=26313 us  dt=[66,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1565409) ui_wave: fps=13.6  render=26598 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1566085) ecg_pipe: t=145 s | 485 rx=171218 B frames=2902 crc=0 resync=0 gaps=1 | pushed=72550 dropped=0 bpm=60.0
+I (1566664) ui_btn: click btn 2
+I (1566664) app_state: clear -> visual only, play=0 kept
+I (1566665) ui_wave: display buffer cleared (both channels) + rpeak markers
+I (1566666) ui_wave: frozen = 0（只停绘制，管线与取样本继续）
+I (1566685) ecg_pipe: rpeak detector reset on request (epoch=12)
+I (1566736) ui_bpm: bpm -> 60
+I (1566736) ui_wave: rpeak epoch -> 12, markers cleared
+I (1566956) ui_bpm: bpm -> --
+I (1567467) ui_wave: fps=13.5  render=24707 us  dt=[64,99] ms  samples=450  gain=5.0  speed=25.0
+I (1569528) ui_wave: fps=14.0  render=25394 us  dt=[63,74] ms  samples=1425  gain=5.0  speed=25.0
+I (1571084) ecg_pipe: t=150 s | 485 rx=177118 B frames=3002 crc=0 resync=0 gaps=1 | pushed=75050 dropped=0 bpm=60.0
+I (1571541) ui_wave: fps=13.9  render=26227 us  dt=[64,74] ms  samples=2425  gain=5.0  speed=25.0
+I (1573556) ui_wave: fps=13.8  render=25575 us  dt=[64,75] ms  samples=3450  gain=5.0  speed=25.0
+I (1575558) ui_wave: fps=13.9  render=25396 us  dt=[64,74] ms  samples=4425  gain=5.0  speed=25.0
+I (1576134) ecg_pipe: t=155 s | 485 rx=183077 B frames=3103 crc=0 resync=0 gaps=1 | pushed=77575 dropped=0 bpm=60.0
+I (1576707) ui_btn: click btn 2
+I (1576707) app_state: clear -> visual only, play=0 kept
+I (1576708) ui_wave: display buffer cleared (both channels) + rpeak markers
+I (1576709) ui_wave: frozen = 0（只停绘制，管线与取样本继续）
+I (1576734) ecg_pipe: rpeak detector reset on request (epoch=13)
+I (1576778) ui_wave: rpeak epoch -> 13, markers cleared
+I (1577578) ui_wave: fps=13.8  render=23691 us  dt=[62,96] ms  samples=450  gain=5.0  speed=25.0
+I (1579289) ui_btn: click btn 2
+I (1579289) app_state: clear -> visual only, play=0 kept
+I (1579290) ui_wave: display buffer cleared (both channels) + rpeak markers
+I (1579291) ui_wave: frozen = 0（只停绘制，管线与取样本继续）
+I (1579382) ecg_pipe: rpeak detector reset on request (epoch=14)
+I (1579426) ui_wave: rpeak epoch -> 14, markers cleared
+I (1579598) ui_wave: fps=13.8  render=23956 us  dt=[64,90] ms  samples=150  gain=5.0  speed=25.0
+I (1581133) ecg_pipe: t=160 s | 485 rx=188977 B frames=3203 crc=0 resync=0 gaps=1 | pushed=80075 dropped=0 bpm=117.6
+I (1581632) ui_wave: fps=14.2  render=24563 us  dt=[64,73] ms  samples=1175  gain=5.0  speed=25.0
+I (1583681) ui_wave: fps=14.1  render=25153 us  dt=[63,74] ms  samples=2150  gain=5.0  speed=25.0
+I (1585753) ui_wave: fps=13.9  render=25314 us  dt=[64,74] ms  samples=3200  gain=5.0  speed=25.0
+I (1586083) ecg_pipe: t=165 s | 485 rx=194818 B frames=3302 crc=0 resync=0 gaps=1 | pushed=82550 dropped=0 bpm=267.9
+I (1586226) ui_bpm: bpm -> 268
+I (1586444) ui_bpm: bpm -> 288
+I (1587760) ui_wave: fps=13.9  render=25535 us  dt=[64,74] ms  samples=4250  gain=5.0  speed=25.0
+I (1589674) ui_bpm: bpm -> --
+I (1589773) ui_wave: fps=13.9  render=25505 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1591082) ecg_pipe: t=170 s | 485 rx=200718 B frames=3402 crc=0 resync=0 gaps=1 | pushed=85050 dropped=0 bpm=288.5
+I (1591778) ui_wave: fps=13.9  render=25410 us  dt=[65,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1593850) ui_wave: fps=13.9  render=25191 us  dt=[65,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1595918) ui_wave: fps=14.0  render=25494 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1596081) ecg_pipe: t=175 s | 485 rx=206618 B frames=3502 crc=0 resync=0 gaps=1 | pushed=87550 dropped=0 bpm=288.5
+I (1597924) ui_wave: fps=13.9  render=25472 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1599979) ui_wave: fps=14.1  render=25221 us  dt=[62,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1601131) ecg_pipe: t=180 s | 485 rx=212577 B frames=3603 crc=0 resync=0 gaps=1 | pushed=90075 dropped=0 bpm=288.5
+I (1602033) ui_wave: fps=14.1  render=25083 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1604083) ui_wave: fps=14.1  render=25180 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1606030) ecg_pipe: t=185 s | 485 rx=218359 B frames=3701 crc=0 resync=0 gaps=1 | pushed=92525 dropped=0 bpm=288.5
+I (1606133) ui_wave: fps=14.1  render=25224 us  dt=[62,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1608187) ui_wave: fps=14.1  render=25151 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1610237) ui_wave: fps=14.1  render=24911 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1611080) ecg_pipe: t=190 s | 485 rx=224318 B frames=3802 crc=0 resync=0 gaps=1 | pushed=95050 dropped=0 bpm=288.5
+I (1612287) ui_wave: fps=14.1  render=25207 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1614337) ui_wave: fps=14.1  render=24921 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1616079) ecg_pipe: t=195 s | 485 rx=230218 B frames=3902 crc=0 resync=0 gaps=1 | pushed=97550 dropped=0 bpm=288.5
+I (1616387) ui_wave: fps=14.1  render=25190 us  dt=[63,73] ms  samples=5000  gain=5.0  speed=25.0
+I (1618436) ui_wave: fps=14.1  render=25796 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1620487) ui_wave: fps=14.1  render=25147 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1621129) ecg_pipe: t=200 s | 485 rx=236177 B frames=4003 crc=0 resync=0 gaps=1 | pushed=100075 dropped=0 bpm=288.5
+I (1622537) ui_wave: fps=14.1  render=24904 us  dt=[62,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1624586) ui_wave: fps=14.1  render=25818 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1626128) ecg_pipe: t=205 s | 485 rx=242077 B frames=4103 crc=0 resync=0 gaps=1 | pushed=102575 dropped=0 bpm=288.5
+I (1626637) ui_wave: fps=14.1  render=25158 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1628686) ui_wave: fps=14.1  render=25811 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1630736) ui_wave: fps=14.1  render=25700 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1631078) ecg_pipe: t=210 s | 485 rx=247918 B frames=4202 crc=0 resync=0 gaps=1 | pushed=105050 dropped=0 bpm=288.5
+I (1632786) ui_wave: fps=14.1  render=25853 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1634847) ui_wave: fps=14.0  render=25424 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1634962) ui_bpm: bpm -> 288
+I (1636027) ecg_pipe: t=215 s | 485 rx=253759 B frames=4301 crc=0 resync=0 gaps=1 | pushed=107525 dropped=0 bpm=288.5
+I (1636850) ui_wave: fps=13.9  render=25747 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1638857) ui_wave: fps=13.9  render=25790 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1639485) ui_bpm: bpm -> --
+I (1640877) ui_wave: fps=13.8  render=25577 us  dt=[65,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1641075) ecg_pipe: t=220 s | 485 rx=259718 B frames=4402 crc=0 resync=0 gaps=1 | pushed=110050 dropped=0 bpm=288.5
+I (1642879) ui_wave: fps=13.9  render=25490 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1644947) ui_wave: fps=14.0  render=25427 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1646126) ecg_pipe: t=225 s | 485 rx=265677 B frames=4503 crc=0 resync=0 gaps=1 | pushed=112575 dropped=0 bpm=288.5
+I (1647009) ui_wave: fps=14.0  render=25954 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1649079) ui_wave: fps=14.0  render=25462 us  dt=[64,75] ms  samples=5000  gain=5.0  speed=25.0
+I (1651125) ecg_pipe: t=230 s | 485 rx=271577 B frames=4603 crc=0 resync=0 gaps=1 | pushed=115075 dropped=0 bpm=288.5
+I (1651148) ui_wave: fps=14.0  render=25423 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1653216) ui_wave: fps=14.0  render=25457 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1655282) ui_wave: fps=14.0  render=25399 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1656025) ecg_pipe: t=235 s | 485 rx=277359 B frames=4701 crc=0 resync=0 gaps=1 | pushed=117525 dropped=0 bpm=288.5
+I (1657349) ui_wave: fps=14.0  render=25385 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1659352) ui_wave: fps=13.9  render=25189 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1661074) ecg_pipe: t=240 s | 485 rx=283318 B frames=4802 crc=0 resync=0 gaps=1 | pushed=120050 dropped=0 bpm=288.5
+I (1661421) ui_wave: fps=14.0  render=25127 us  dt=[64,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1663473) ui_wave: fps=14.1  render=25069 us  dt=[62,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1665527) ui_wave: fps=14.1  render=25234 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1666124) ecg_pipe: t=245 s | 485 rx=289277 B frames=4903 crc=0 resync=0 gaps=1 | pushed=122575 dropped=0 bpm=288.5
+I (1667577) ui_wave: fps=14.1  render=25138 us  dt=[63,74] ms  samples=5000  gain=5.0  speed=25.0
+I (1669627) ui_wave: fps=14.1  render=25347 us  dt=[63,73] ms  samples=5000  gain=5.0  speed=25.0
+I (1671123) ecg_pipe: t=250 s | 485 rx=295177 B frames=5003 crc=0 resync=0 gaps=1 | pushed=125075 dropped=0 bpm=288.5
