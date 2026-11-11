@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -464,6 +465,126 @@ static float hr_bpm_expire(float bpm, int64_t last_peak_us)
     return bpm;
 }
 
+/* ============================================================================
+ * ★T232-2-1（2026-11-11）：1 s 窗口样本统计（连续观测能力）
+ * 见 ecg_pipeline.h 的说明。只在 stat on 时累计。
+ * ========================================================================== */
+static volatile bool s_stat_en = false;
+
+typedef struct {
+    uint32_t n;
+    int32_t  mn, mx;
+    int64_t  sum;
+    int64_t  sumsq;
+    uint32_t sat_n;
+    uint32_t run, run_max;
+    float    g1, g2;        /* Goertzel 状态 */
+} stat_acc_t;
+
+static stat_acc_t          s_acc;           /* 累计中（生产者任务内） */
+static volatile bool       s_stat_pub_ready = false;
+static volatile uint32_t   s_stat_pub_seq   = 0;
+static ecg_pipeline_stat_t s_stat_pub;
+
+/* 50 Hz @ 500 Hz：恰好 10 个整周期 ⇒ Goertzel 无泄漏 */
+#define STAT_G_COEFF   1.6180339887f      /* 2*cos(2π*50/500) */
+
+static void stat_acc_reset(void)
+{
+    memset(&s_acc, 0, sizeof(s_acc));
+    s_acc.mn = INT32_MAX;
+    s_acc.mx = INT32_MIN;
+}
+
+static void stat_feed(int32_t v)
+{
+    if (!s_stat_en) {
+        return;
+    }
+    if (s_acc.n == 0) {
+        stat_acc_reset();
+    }
+    if (v < s_acc.mn) { s_acc.mn = v; }
+    if (v > s_acc.mx) { s_acc.mx = v; }
+    s_acc.sum   += v;
+    s_acc.sumsq += (int64_t)v * (int64_t)v;
+
+    if (v >= ECG_STAT_SAT_LIMIT || v <= -ECG_STAT_SAT_LIMIT) {
+        s_acc.sat_n++;
+        s_acc.run++;
+        if (s_acc.run > s_acc.run_max) { s_acc.run_max = s_acc.run; }
+    } else {
+        s_acc.run = 0;
+    }
+
+    /* Goertzel：s = x + coeff*s1 - s2 */
+    const float x = (float)v;
+    const float s0 = x + STAT_G_COEFF * s_acc.g1 - s_acc.g2;
+    s_acc.g2 = s_acc.g1;
+    s_acc.g1 = s0;
+
+    s_acc.n++;
+    if (s_acc.n >= ECG_STAT_WIN) {
+        const float n  = (float)s_acc.n;
+        const float pw = s_acc.g1 * s_acc.g1 + s_acc.g2 * s_acc.g2
+                         - STAT_G_COEFF * s_acc.g1 * s_acc.g2;
+        const float mean = (float)s_acc.sum / n;
+        const float ms   = (float)s_acc.sumsq / n;
+
+        ecg_pipeline_stat_t t;
+        memset(&t, 0, sizeof(t));
+        t.windows      = s_stat_pub.windows + 1u;
+        t.mn           = (int16_t)s_acc.mn;
+        t.mx           = (int16_t)s_acc.mx;
+        t.mean         = mean;
+        t.rms          = sqrtf(ms > 0.0f ? ms : 0.0f);
+        t.rms_ac       = sqrtf((ms - mean * mean) > 0.0f ? (ms - mean * mean) : 0.0f);
+        t.sat_n        = s_acc.sat_n;
+        t.sat_run_max  = s_acc.run_max;
+        /* 单边幅度：2*sqrt(power)/N；power 为负（数值噪声）时钳 0 */
+        t.amp50        = 2.0f * sqrtf(pw > 0.0f ? pw : 0.0f) / n;
+
+        s_stat_pub_seq++;
+        __sync_synchronize();
+        s_stat_pub = t;
+        __sync_synchronize();
+        s_stat_pub_seq++;
+        s_stat_pub_ready = true;
+
+        stat_acc_reset();
+    }
+}
+
+void ecg_pipeline_stat_set(bool en)
+{
+    s_stat_en = en;
+    stat_acc_reset();
+    if (!en) {
+        s_stat_pub_ready = false;
+    }
+}
+
+bool ecg_pipeline_stat_enabled(void)
+{
+    return s_stat_en;
+}
+
+bool ecg_pipeline_stat_get(ecg_pipeline_stat_t *out)
+{
+    if (out == NULL || !s_stat_pub_ready) {
+        return false;
+    }
+    for (int i = 0; i < 8; i++) {
+        const uint32_t s1 = s_stat_pub_seq;
+        if (s1 & 1u) { continue; }
+        __sync_synchronize();
+        *out = s_stat_pub;
+        __sync_synchronize();
+        if (s_stat_pub_seq == s1) { return true; }
+    }
+    return false;
+}
+
 /** 发布心率快照（seqlock 写侧，**只在生产者任务内调用**） */
 static void hr_publish(void)
 {
@@ -495,6 +616,7 @@ static void push_sample(int32_t v1, int32_t v2)
      * 不会因为丢了几个样本就让 R 峰标记越画越偏。 */
     if (ecg_ring_push(&s_ring, v1, v2)) {
         raw_hist_push(v1);              /* ★P2d：留住原始样本，供峰处邻域取用 */
+        stat_feed(v1);                  /* ★T232-2-1：1 s 窗口统计（stat on 时才累计） */
         const uint32_t newest_global = s_push_seq;
         s_push_seq = newest_global + 1u;
 

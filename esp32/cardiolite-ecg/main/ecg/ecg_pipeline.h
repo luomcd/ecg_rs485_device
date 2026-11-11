@@ -122,6 +122,43 @@ typedef struct {
  */
 bool ecg_pipeline_get_hr(ecg_pipeline_hr_t *out);
 
+/* ============================================================================
+ * ★T232-2-1（2026-11-11）：连续观测能力 —— 1 s 窗口样本统计
+ *
+ * 为什么需要：LOD 的代价全在「阶跃幅度 / 连续削顶 / 峰间饱和 / 噪声 RMS / 50 Hz 残留 /
+ *   0.05 Hz 恢复曲线」，而 `rpeak wide` 只给峰邻域 ±3 样本、`rpeak diag` 只给检测器内部量
+ *   ⇒ 都不足以评价 LOD（评审 T233 v3 P0-4）。
+ *
+ * 做法：对**进入管线的 CH1 原始样本**（与检测器同一批，环缓丢样本时同步跳过）做 1 s 窗口统计。
+ *   - 窗口长度固定 1 s（500 样本）⇒ 50 Hz 恰好 10 个整周期，Goertzel 无泄漏；
+ *   - 只在 `stat on` 时累计，关闭时零开销；
+ *   - 只保留"最近一个完整窗口"的快照，不占内存、不产生日志洪水。
+ *
+ * 🛑 统计的是**原始样本**（环缓里的 int16），不是滤波后、不是检测器内部量。
+ * ========================================================================== */
+#define ECG_STAT_WIN        500      /* 1 s @500 Hz */
+#define ECG_STAT_SAT_LIMIT  32700    /* |v| ≥ 此值即判饱和（int16 满量程 32767） */
+
+typedef struct {
+    uint32_t windows;       /* 已完成窗口数（0 = 还没凑满一个窗口） */
+    int16_t  mn, mx;        /* 窗口内最小/最大原始样本 */
+    float    mean;          /* 均值（LSB） */
+    float    rms;           /* RMS（LSB，去均值后可当噪声看；这里给含直流的 RMS） */
+    float    rms_ac;        /* 去均值 RMS = 交流有效值（更接近"噪声/信号幅度"） */
+    uint32_t sat_n;         /* 饱和样本数 */
+    uint32_t sat_run_max;   /* 最长连续饱和长度（样本） */
+    float    amp50;         /* 50 Hz 分量幅度（LSB，Goertzel 估计） */
+} ecg_pipeline_stat_t;
+
+/** @brief 开关统计（关闭时零开销，窗口状态清零） */
+void ecg_pipeline_stat_set(bool en);
+
+/** @brief 是否已开启 */
+bool ecg_pipeline_stat_enabled(void);
+
+/** @brief 读最近一个完整窗口的统计（无锁快照；读撕裂时返回 false） */
+bool ecg_pipeline_stat_get(ecg_pipeline_stat_t *out);
+
 /**
  * @brief 取走待绘制的 R 峰（Core 0 调用）。
  * @param abs_idx 输出缓冲，**每个元素是该峰的「全局绝对样本号」**——与生产者

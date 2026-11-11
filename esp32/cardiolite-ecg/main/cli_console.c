@@ -1476,6 +1476,50 @@ static int cmd_rpeak(int argc, char **argv)
  * 物理 8 MB ≠ 可用 8 MB：本工程开了 `SPIRAM_XIP_FROM_PSRAM` +
  * `FETCH_INSTRUCTIONS` + `RODATA`，固件的一部分代码/常量常驻 PSRAM。
  * 硬件实测（启动日志）：`octal_psram: density 0x03 (64 Mbit)` ⇒ 8 MB。 */
+/* ---- stat：1 s 窗口样本统计（★T232-2-1，连续观测能力）----
+ * 用途：评价 LOD 开启带来的「阶跃 / 削顶 / 噪声 / 50 Hz / 恢复」代价时，
+ *       `rpeak wide`（峰邻域 ±3）与 `rpeak diag`（检测器内部量）都不够，
+ *       必须能连续统计**原始样本**。
+ * 用法：stat on | stat off | stat（读最近一个完整窗口） */
+static int cmd_stat(int argc, char **argv)
+{
+    if (argc >= 2 && strcasecmp(argv[1], "on") == 0) {
+        ecg_pipeline_stat_set(true);
+        printf("stat: on（每 500 样本更新一次快照，开销可忽略）\n");
+        return 0;
+    }
+    if (argc >= 2 && strcasecmp(argv[1], "off") == 0) {
+        ecg_pipeline_stat_set(false);
+        printf("stat: off\n");
+        return 0;
+    }
+    if (argc >= 2) {
+        printf("用法: stat [on|off]（不带参数 = 读最近窗口）\n");
+        return 1;
+    }
+
+    printf("stat: %s\n", ecg_pipeline_stat_enabled() ? "on" : "off");
+    ecg_pipeline_stat_t st;
+    if (!ecg_pipeline_stat_get(&st)) {
+        printf("  还没有完整窗口（需先 stat on，且已收满 %d 个样本）\n", ECG_STAT_WIN);
+        return 0;
+    }
+    printf("  窗口   : 第 %lu 个（%d 样本 = 1 s）\n",
+           (unsigned long)st.windows, ECG_STAT_WIN);
+    printf("  min/max: %d / %d LSB   （%.0f / %.0f µV @0.1526）\n",
+           (int)st.mn, (int)st.mx, (double)st.mn * 0.1526, (double)st.mx * 0.1526);
+    printf("  mean   : %.1f LSB\n", (double)st.mean);
+    printf("  RMS    : %.1f LSB（含直流） / %.1f LSB（去直流）\n",
+           (double)st.rms, (double)st.rms_ac);
+    printf("  饱和   : %lu 个样本（|v|≥%d），最长连续 %lu\n",
+           (unsigned long)st.sat_n, ECG_STAT_SAT_LIMIT, (unsigned long)st.sat_run_max);
+    printf("  50 Hz  : 幅度 %.1f LSB（≈%.0f µV）\n",
+           (double)st.amp50, (double)st.amp50 * 0.1526);
+    printf("  峰峰值 : %d LSB（≈%.0f µV）\n",
+           (int)st.mx - (int)st.mn, ((double)st.mx - (double)st.mn) * 0.1526);
+    return 0;
+}
+
 static int cmd_mem(int argc, char **argv)
 {
     (void)argc;
@@ -2200,6 +2244,12 @@ static void register_commands(void)
             .help    = "打印内部 RAM / PSRAM 的总量、空闲、最大连续块",
             .hint    = NULL,
             .func    = &cmd_mem,
+        },
+        {
+            .command = "stat",
+            .help    = "1 s 窗口样本统计：min/max/RMS/饱和计数/最长饱和/50Hz 幅度（LOD 代价评估用）",
+            .hint    = "stat on | stat off | stat（读最近窗口）",
+            .func    = &cmd_stat,
         },
         /* ---- S9a：485 实时源 ---- */
         {
