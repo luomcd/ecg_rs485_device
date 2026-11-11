@@ -437,6 +437,33 @@ static void file_epoch_begin(void)
                     APP_SAMPLE_RATE_HZ, s_dump_name, s_speed);
 }
 
+/* ============================================================================
+ * ★T-15（2026-11-11）：心率**超时失效**
+ *
+ * 问题：`s_hr_bpm` 只在 `pipeline_launch()` 里置 0，**全工程没有过期逻辑**
+ *   ⇒ 信号消失后屏上会一直停在最后一个心率值。
+ *   实测：关掉信号源 52 s，`485-stat` 仍报 bpm=60.0（T229 §13 之后的 T-2'）。
+ *
+ * 修法：超过 `ECG_BPM_EXPIRE_MS` 没有新峰 ⇒ 有效值视为 0；UI 见 0 就显示 `--`。
+ * 🛑 取 4 s：40 bpm 时 RR=1.5 s，留 2.7 倍余量，避免正常低心率拍间闪烁。
+ * 🛑 只改"对外读到的值"，不改 `s_hr_bpm` 本身——检测器内部逻辑一律不受影响。
+ * ========================================================================== */
+#ifndef ECG_BPM_EXPIRE_MS
+#define ECG_BPM_EXPIRE_MS   4000
+#endif
+
+static float hr_bpm_expire(float bpm, int64_t last_peak_us)
+{
+    if (bpm <= 0.0f || last_peak_us == 0) {
+        return 0.0f;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (now - last_peak_us > (int64_t)ECG_BPM_EXPIRE_MS * 1000) {
+        return 0.0f;
+    }
+    return bpm;
+}
+
 /** 发布心率快照（seqlock 写侧，**只在生产者任务内调用**） */
 static void hr_publish(void)
 {
@@ -610,7 +637,8 @@ static void rs485_producer_loop(void)
                      " | pushed=%" PRIu32 " dropped=%" PRIu32 " bpm=%.1f",
                      elapsed_ms / 1000u, rs.rx_bytes, s_stream.frames,
                      s_stream.crc_errors, s_stream.resync_bytes, s_stream.seq_gaps,
-                     pushed, dropped, (double)ecg_rpeak_bpm(&s_rp));
+                     pushed, dropped, (double)hr_bpm_expire(ecg_rpeak_bpm(&s_rp),
+                                                            s_rp_last_peak_us));
         }
     }
 
@@ -1146,6 +1174,8 @@ bool ecg_pipeline_get_hr(ecg_pipeline_hr_t *out)
         out->fed          = s_hr_fed;
         __sync_synchronize();
         if (s_hr_seq == s1) {
+            /* ★T-15：快照稳定后再套"超时失效"，保证与 last_peak_us 同一时刻 */
+            out->bpm = hr_bpm_expire(out->bpm, out->last_peak_us);
             return true;
         }
     }
