@@ -89,7 +89,14 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
     __HAL_RCC_GPIOC_CLK_ENABLE();   /* PC12 = TX（MX_GPIO_Init 已开，重复开无副作用） */
     __HAL_RCC_GPIOD_CLK_ENABLE();   /* PD2  = RX（MX_GPIO_Init **未**开，必须在此开） */
 
-    /* PC12 → UART5_TX，AF8。推挽输出，无上下拉。 */
+    /* PC12 → UART5_TX，AF8。推挽输出，无上下拉。
+     * ★T245（2026-11-12）已实测完边沿档位对坏帧率的影响（结论留档，别重复做）：
+     *     `LOW`       → 6.32%（拐点：边沿一慢，坏点从"帧首+3/帧尾−2"扩散到 +8~+23 一大片）
+     *     `HIGH`      → 1.12%（原设置）
+     *     `VERY_HIGH` → 1.01%（与 HIGH 持平 ⇒ **加档没有收益**）
+     * ⇒ 链路卡在**物理层余量边缘**：慢边沿直接崩，快边沿不再改善
+     *   ⇒ 瓶颈不在 STM32 的驱动能力（否则加档会变好），而在线材/终端/共模。
+     * 🛑 保持 `HIGH`：它是"够快"与"不过冲"的既有平衡点，且上板历史数据都基于它。 */
     g.Pin       = GPIO_PIN_12;
     g.Mode      = GPIO_MODE_AF_PP;
     g.Pull      = GPIO_NOPULL;
@@ -130,7 +137,14 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 void comm_init(void)
 {
     huart5.Instance                    = UART5;
-    huart5.Init.BaudRate               = 115200;
+    /* ★T246（2026-11-12）**临时实验**：115200 → 57600，测"降波特率能不能把残余坏帧压到 0"。
+     * 依据：T244/T245 已定死是物理层余量边缘（终端关掉后 1.12%→0.037%），
+     *   降速把位宽从 8.68 µs 加倍到 17.4 µs ⇒ 采样窗口余量翻倍。
+     * 带宽账：帧长 109 B × 20 fps = 2.18 kB/s；57600 8N1 = 5.76 kB/s ⇒ 占用 **37.8%**
+     *   （115200 时 18.9%）⇒ 仍有一倍余量，**帧率与波形内容不受影响**（帧率只由 500/25 决定）。
+     *   ⚠ 单帧发送耗时 9.5 ms → 18.9 ms（占 50 ms 帧周期的 38%），显示延迟 +9.5 ms，人眼不可见。
+     * 🛑 实验完改回 115200，并把 banner 字符串一起改回（易漏）。 */
+    huart5.Init.BaudRate               = 57600;
     huart5.Init.WordLength             = UART_WORDLENGTH_8B;
     huart5.Init.StopBits               = UART_STOPBITS_1;
     huart5.Init.Parity                 = UART_PARITY_NONE;
@@ -155,7 +169,7 @@ void comm_init(void)
      * ⚠ 放在 init 末尾 —— 此时 s_tx_busy=0、中断已开，可以安全走 comm_send。 */
     {
         static const char banner[] =
-            "\r\n[uart5] ready 115200 8N1  PC12=TX PD2=RX\r\n";
+            "\r\n[uart5] ready 57600 8N1  PC12=TX PD2=RX\r\n";
         (void)comm_send((const uint8_t *)banner, (uint16_t)(sizeof(banner) - 1u));
     }
 #endif

@@ -117,14 +117,26 @@ typedef struct {
 
 typedef struct {
         uint32_t idxraw;
-        uint16_t dtcycles;
+        uint32_t dtcycles;  /* ★T239 步2：**uint16 → uint32**。原 16 位在 80 MHz 下只有
+                             *   65535 cyc = **819 µs** 的上限，而 DRDY 周期 1172 µs ≈ 93.7 kcyc
+                             *   ⇒ 字段本身装不下一个样本周期，尖峰一旦越界会**静默回绕、
+                             *   看起来更快**。加 CH2 后耗时翻倍，必须扩宽。
+                             *   ★ 口径不变：**只统计 CH1** 那一段（ASCII 列⑥ 与历史数据可比）；
+                             *   两路合计另见 ads1293_dt_max_cycles()。
+                             *   ⚠ 正好吃掉原 offset 6-7 的 2 B 对齐空洞 ⇒ sizeof 不变。 */
         int32_t  ecgraw;
         uint32_t idxfilter;
         int16_t  dsrateraw;
+        int16_t  ch2_out;   /* ★T239 步2：CH2 在**输出点**上的 int16 LSB 值（真实数据）。
+                             *   ★ 两种模式都写这里、**单位统一为 LSB**：
+                             *       500 Hz 档 ← `ecg_out_f32_process(&out2,..)` 的返回值
+                             *       853 档    ← `ecg_out_codes_to_lsb((float)f2)`（入队时就换算）
+                             *     ⇒ 打包时一句 `v2 = ch2_out` 即可，**不必再按 `_braw853` 分支**。
+                             *   ★ 落点：吃 dsrateraw 之后、ecgraw2 之前的 **offset 18-19**
+                             *     （原 2 B 对齐空洞）⇒ sizeof **仍 32 B**。 */
         int32_t  ecgraw2;   /* ★G8：CH2 原始码。★**必须放在 double 之前**——此处正是编译器
-                             *   既有的 6 B 对齐空洞（offset 18-23），占用后 sizeof 仍 **32 B**；
-                             *   若追加到结构末尾，会被 double 顶到 offset 32 ⇒ sizeof 40 B
-                             *   ⇒ 队列 +200 B（本步认可的账是 +100 B）。 */
+                             *   既有的对齐空洞；若追加到结构末尾，会被 double 顶到 offset 32
+                             *   ⇒ sizeof 40 B ⇒ 队列 +200 B。见 T239 §5 的离线断言。 */
         double   filterraw;
         
 } ecg_filter_t;
@@ -152,14 +164,35 @@ void     ads1293_set_raw853(uint32_t on);
 uint32_t ads1293_raw853_is_on(void);
 
 /* ---- 双通道(CH1+CH2)输出开关（★G8 2026-09-23；命令 `test ch2 [on|off]`）--------
- * on : 二进制显示帧 59 B → **109 B**，载荷 `[CH1×N][CH2×N]` **块布局**，且 CH2 ≡ CH1；
- * off: 恢复单通道（上电默认）——逐字节等同 G7 定稿，是**回归基线**。
+ * on : 二进制显示帧 59 B → **109 B**，载荷 `[CH1×N][CH2×N]` **块布局**。
+ *      ★T239 步2 起 CH2 是**真实数据**（独立 ctx + 独立重采样器），不再复制 CH1；
+ *      且按猛哥拍板 Q1 **上电默认 on**。
+ * off: 恢复单通道 —— 逐字节等同 G7 定稿，是**回归基线**（`test ch2 off` 即回退档）。
  * 只影响**二进制**帧长；ASCII 档的 CH2 走列⑦（`ecgraw2` 原始码），帧长不变。
  * 🛑 on 期间上位机（按 59 B 定长解析）必然错乱 ⇒ 必须先用串口助手抓包验收。
  * STA bit2（channel 0=I／1=I&II）随本开关联动，见 ads1293_status_byte()。 */
 void     ads1293_set_ch2(uint32_t on);
 uint32_t ads1293_ch2_is_on(void);
 uint8_t  ads1293_status_byte(void);
+
+/* ---- ★T239 步2（2026-11-12）：三个运行期观测量（ASCII `test chstat`）----------
+ * 🛑 口径＝**本段起流以来**：都在 `ads1293_filter_chain_init()` 里随 START 清零，
+ *   与 `gdtover` 一致。要看"全程最坏值"就在一段里跑完立刻读。
+ * 判据（T239 §6）：`dt_max < 400 µs`（= 32000 cyc @80MHz，DRDY 1172 µs 的 34%）、
+ *   `dt_over == 0`、`out_desync == 0`。 */
+uint32_t ads1293_dt_max_cycles(void);    /* 两路合计耗时峰值（cyc）；÷80 = µs */
+uint32_t ads1293_dt_over_count(void);    /* 合计耗时 > 46880 cyc(586 µs = DRDY 一半) 的次数 */
+uint32_t ads1293_out_desync_count(void); /* 两个重采样器输出节拍不一致的次数（正常恒 0） */
+
+/* ---- ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------
+ * 用途：把两路样本强制成常量，用来判"线上把数据坏成什么样"—— 期望值已知 ⇒ 每个偏离
+ *   的字节**偏移**都能定位（真实 ECG 数据做不到这一点）。
+ * 只覆盖样本区，帧头/SEQ/STA/CRC 与 CRC 计算都不动 ⇒ 帧结构照常校验。
+ * ⚠ 开了图案之后 CH1 段与 CH2 段必然逐点相同 ⇒ 帧检查脚本的"CH1≠CH2"判据会报警，
+ *   那是**预期**，不是回归失败。
+ * 🛑 验收完删除本组函数与 `vcomcmd.c` 的 `test patt`（同生共死）。 */
+void     ads1293_set_test_pattern(uint32_t en, int16_t val);
+uint32_t ads1293_test_pattern_is_on(void);
 
 /* ---- ★T239（2026-11-12）：滤波链设置/查询的设备层入口 --------------------
  * 引入原因：`g_dc`/`f64` 两个全局已并入 `ecg_restore_ctx`（Filter/ecg_filter.h），

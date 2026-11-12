@@ -86,7 +86,13 @@ static lv_obj_t         *s_canvas[2];
 static uint16_t         *s_buf[2];
 static lv_obj_t         *s_lbl_c1;      /* 画布 1 左侧角标 */
 static lv_obj_t         *s_lbl_c1r;     /* 画布 1 右侧角标 */
-static lv_obj_t         *s_lbl_c2;      /* 画布 2 覆盖文案 */
+/* ★T242（2026-11-12）：画布 2 的覆盖文案 `s_lbl_c2`
+ *   （原内容 `"Single-channel file (Lead I) -- canvas 2 no data"`）**已删除**。
+ *   原因：STM32 侧 `T239 步2` 起 CH2 是**真实第二路数据**、且 `_bch2` 上电默认 on
+ *   ⇒ 屏上双画布常态就有数据，那条"无数据"提示只在单通道回退档才有意义，
+ *   常态显示反而是**误导**（猛哥 2026-11-12 明确要求去掉）。
+ *   ⚠ 不要"改成条件显示"再放回来：单通道时画布 2 是**空白网格**，本身已足够自明。
+ *   ⚠ 若将来要加画布 2 的角标（如 `CH2 = IN3-IN1`），**新建** label，别复活这个。 */
 static const ui_theme_t *s_theme;
 
 static int32_t   s_disp[APP_RING_SAMPLES];      /* CH1 显示缓冲 */
@@ -95,7 +101,21 @@ static uint32_t  s_disp_wr;
 static uint32_t  s_disp_cnt;
 static uint32_t  s_disp2_wr;
 static uint32_t  s_disp2_cnt;
-static bool      s_dual = false;                /* 双通道显示模式 */
+/* ★T242（2026-11-12）：**上电默认双通道**（原为 false）。
+ * 依据（猛哥 2026-11-12 拍板）：STM32 侧 `T239 步2` 起 `_bch2` 上电初值 = 1
+ *   ⇒ 上行帧本来就是 109 B 双通道；ESP32 若还从单通道起步，屏上会先只画 CH1，
+ *     直到有人敲 `485-send ch2 1` 才出第二路 —— 与"芯片侧已经给了两路"这个事实不符。
+ * ⇒ 两边默认对齐，`485-send ch2 0|1` 负责后续开关（`cli_console.c:2054` 同时改
+ *   STM32 的 `0x06` 与本变量，**两边一起动**，不会一个改一个不改）。
+ * ⚠ 单通道回退时（`ch2 0`）：STM32 改发 59 B，`fr.n_ch2 = 0` ⇒ 环缓里 ch2 恒 0；
+ *   本变量同时被置 false ⇒ 画布 2 只剩空白网格，不会留下一条"假平线"。
+ * ⚠ 不要改成"永远 true"：那样 `ch2 0` 之后画布 2 会画一条贴基线的平线，看着像有数据。
+ * ⚠ **已知边界**：若有人从**别的通道**（WinApp / STM32 ASCII `test ch2 off`）把 STM32 改成
+ *   单通道，而 ESP32 没被告知，则本变量仍 true、收到 59 B 帧 ⇒ 画布 2 是一条平线。
+ *   补一句 `485-send ch2 1` 即可（它会同时把 STM32 与本地都置成双通道）。
+ *   ⇒ 不做"按帧长自动跟随"：那需要在 pipeline 任务里调 LVGL（非线程安全），
+ *     收益只是省一条命令，不值这个风险。 */
+static bool      s_dual = true;                 /* 双通道显示模式（上电默认开） */
 
 static uint16_t  s_c_bg, s_c_gmin, s_c_gmaj, s_c_base, s_c_ch1, s_c_ch2, s_c_ruler;
 static uint16_t  s_c_rpeak;                     /* R 峰标记（S7） */
@@ -713,11 +733,9 @@ esp_err_t ui_waveform_create(lv_obj_t *scr)
     lv_label_set_text(s_lbl_c1r, "5.0 s / 500.0 Hz");
     lv_obj_align(s_lbl_c1r, LV_ALIGN_TOP_MID, 0, APP_CANVAS1_Y + 1);
 
-    s_lbl_c2 = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_c2, &lv_font_montserrat_16, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_c2, lv_color_hex(s_theme->text), LV_PART_MAIN);
-    lv_label_set_text(s_lbl_c2, "Single-channel file (Lead I) -- canvas 2 no data");
-    lv_obj_align(s_lbl_c2, LV_ALIGN_TOP_MID, 0, APP_CANVAS2_Y + CY0 + BASELINE_Y - 10);
+    /* ★T242：画布 2 **不再有覆盖文案**（原 `"Single-channel file (Lead I) -- canvas 2 no data"`）。
+     *   本工程已常态双通道（STM32 `_bch2` 上电 = 1，CH2 有真实数据）⇒ 该提示恒为假。
+     *   单通道回退时画布 2 保留**空白网格**（见下面 `paint_canvas2_static()`），足以自明。 */
 
     /* ---- 画布 2 静态一次 ---- */
     paint_canvas2_static();
@@ -745,7 +763,6 @@ void ui_waveform_set_theme(const ui_theme_t *theme)
 
     lv_obj_set_style_text_color(s_lbl_c1,  lv_color_hex(s_theme->text), LV_PART_MAIN);
     lv_obj_set_style_text_color(s_lbl_c1r, lv_color_hex(s_theme->text), LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_c2,  lv_color_hex(s_theme->text), LV_PART_MAIN);
     paint_canvas2_static();
 }
 
@@ -859,16 +876,11 @@ void ui_waveform_set_dual_channel(bool dual)
     /* 切换时清空两路缓冲：切换前的 CH1 样本没有配对的 CH2，留着会时间轴错位 */
     ui_waveform_clear();
 
-    if (s_lbl_c2 != NULL) {
-        if (dual) {
-            lv_obj_add_flag(s_lbl_c2, LV_OBJ_FLAG_HIDDEN);   /* 双通道时藏掉"无数据" */
-        } else {
-            lv_obj_clear_flag(s_lbl_c2, LV_OBJ_FLAG_HIDDEN);
-            /* 回到单通道：画布 2 恢复静态「无数据」画面 */
-            if (s_buf[1] != NULL) {
-                paint_canvas2_static();
-            }
-        }
+    /* ★T242：原这里负责显隐 `s_lbl_c2`（"canvas 2 no data" 提示），该 label 已删除。
+     * 只需在**回单通道**时把画布 2 重刷成空白网格 —— 否则会留下上一次双通道的 CH2 轨迹，
+     * 看着像"单通道却还在画第二路"。双通道方向不用动：`on_frame()` 下一帧就会覆盖。 */
+    if (!dual) {
+        paint_canvas2_static();
     }
 
     ESP_LOGI(TAG, "dual channel = %d%s", (int)dual,

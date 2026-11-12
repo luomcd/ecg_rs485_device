@@ -410,6 +410,71 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
         return;
     }
 
+    /* ---- ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------
+     * 用法：`test patt 0`（样本全 0x0000）／`test patt ff`（全 0xFFFF）／`test patt off`
+     * 为什么两个图案都要：坏法分两种，一种图案只能看见一半 ——
+     *   `0`  → 只看得到"位被**置** 1"（0 变非 0）；
+     *   `ff` → 只看得到"位被**清** 0"（1 变 0；本项目实测的坏法正是这种）。
+     * ⇒ 判定"线上坏成什么样"必须两种都跑一遍，别只跑一种就下结论。
+     * 🛑 只覆盖**样本区**：帧头/TYPE/LEN/SEQ/STA/CRC 都保持真实值，CRC 也按实际字节算
+     *   ⇒ 帧结构与 CRC 校验照旧有效（这一点是它能当取证工具的前提）。
+     * 🛑 命令名 `patt` 已查过前缀不冲突（既有子命令无 `p` 开头）。
+     * 🛑 临时功能：验收完与 `ads1293_set_test_pattern()` 一起删除。
+     * 🛑 必须带 `\r\n`。 */
+    if( argc== 3 && memcmp(argv[1],"patt",4)==0)
+    {
+        if( memcmp(argv[2],"off",3)==0)
+        {
+            ads1293_set_test_pattern(0u, 0);
+            printf_msg("patt off\r\n");
+            return;
+        }
+        if( memcmp(argv[2],"0",1)==0)
+        {
+            ads1293_set_test_pattern(1u, (int16_t)0x0000);
+            printf_msg("patt 0000\r\n");
+            return;
+        }
+        if( memcmp(argv[2],"ff",2)==0)
+        {
+            ads1293_set_test_pattern(1u, (int16_t)-1);   /* 0xFFFF */
+            printf_msg("patt ffff\r\n");
+            return;
+        }
+        printf_msg("usage: test patt [0|ff|off]\r\n");
+        return;
+    }
+
+    /* ---- ★T239 步2（2026-11-12）：CH2/CPU 运行期观测 ------------------------------
+     * 用法：`test chstat`（**只读**，不清零；清零随 START 发生在
+     *   `ads1293_filter_chain_init()` —— 与 gdtover 同口径）。
+     * 回显**一行**：
+     *   `ch: ch2=<0|1> desync=<n> dtmax=<cyc>(<uus>us) over=<n>`
+     *   ← 双通道开关 ＋ 两路重采样器失步次数 ＋ 两路**合计**每样本耗时峰值/越限次数
+     * 🛑 判据（T239 §6）：`dtmax < 32000`（400 µs，DRDY 1172 µs 的 34%）、`over == 0`、
+     *   `desync == 0`。三个数任一不过 ⇒ **停**，别拿后面的波形下结论。
+     * ⚠ cyc 是真值、µs 只是给人看的换算（整数÷80），精确核算用 cyc 那列。
+     * 🛑 **只允许一次 `printf_msg`**：`comm_send()` 是"忙判→丢帧"（`comm_port.c:175`
+     *   在拷贝**之前**判 `s_tx_busy`）⇒ 连续两次 `printf_msg` 的第二条会被**静默丢弃**
+     *   （2026-11-12 首版写成两行，实测只回 `dt:` 那行，`rs:` 那行从未出现）。
+     *   需要更多字段就往同一行里加，**别开第二条**。
+     * 🛑 **命令名为什么是 `chstat` 而不是 `cpustat`**：本函数的分派**全是前缀比较**
+     *   （`memcmp(argv[1],"cpu",3)`），而 `cpu` 是既有的"列⑥开关"子命令
+     *   ⇒ 叫 `cpustat` 会被它先吃掉（实测回的是 `cpu(dtcycles):off batch:16`），
+     *   本命令永远不可达。改名 `chstat`（首 3 字符 `chs` 与既有任一子命令都不撞）。
+     *   ⇒ 以后新增子命令**必须**先查前缀：`grep 'memcmp(argv\[1\],' vcomcmd.c`。
+     * 🛑 必须带 `\r\n` 结尾（T163 踩过：少 CRLF 会把下一行接到本行上）。 */
+    if( argc== 2 && memcmp(argv[1],"chstat",7)==0)
+    {
+        const unsigned dtmax = (unsigned)ads1293_dt_max_cycles();
+        printf_msg("ch: ch2=%u desync=%u dtmax=%u(%uus) over=%u\r\n",
+                   (unsigned)ads1293_ch2_is_on(),
+                   (unsigned)ads1293_out_desync_count(),
+                   dtmax, dtmax / 80u,
+                   (unsigned)ads1293_dt_over_count());
+        return;
+    }
+
 #if ECG_RESTORE_AB_VERIFY
     /* ---- ★T239 步1 临时验证：A/B 逐位比较统计（宏=1 才有）------------------------
      * 用法：`test abstat` 看累计；`test abreset` 清零后重新计数。

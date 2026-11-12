@@ -46,6 +46,54 @@ uint32_t        ecgfilteridx;
 uint32_t        gdtover;
 uint16_t        seQidx;
 
+/* ★★ T239 步2（2026-11-12）：CH2 的**独立**上下文与重采样器 -----------------------
+ * 与 CH1 用**同一段代码**（`ecg_restore_ctx_process`）、各自持状态 ⇒ 逻辑永不分成两套。
+ * 🛑 三条纪律，缺一条两路就不可比：
+ *   ① 初始化必须与 CH1 **同批**（`ads1293_filter_chain_init()` 内），否则首样本基线/静默窗错位；
+ *   ② 滤波与 CH1 **同处、每样本各调一次**（不看 `_braw853`，两种模式都要喂）；
+ *      重采样（`out2`）只在 500 档调，且必须与 `out` **同一次判断里**各调一次
+ *      ⇒ 两路输出点严格对齐（自证量 `s_out_desync`）；
+ *   ③ 设置（notch/mode）必须**同时**作用于两路（见 ads1293_set_notch/set_mode）⇒ 否则不同源。
+ * ⚠ CH2 原始码 `ecgraw2` **不做 24-bit 符号扩展**，与 CH1 口径一致（照抄 ads1293_ecg_ch 的注释）。 */
+static ecg_restore_ctx s_ctx2;
+static ecg_out_f32     out2;
+
+/* CH2 侧的自证计数（正常恒 0，可用 ASCII `test chstat` 读）：
+ *   `s_out_desync`：两路重采样器"本样本有无输出"不一致的次数 —— 结构上应恒 0
+ *                   （同 tin/tout/acc、同处调用），一旦不为 0 就是初始化/调用点被改坏了。
+ *   `s_dt_max_total`：**CH1+CH2 合计**每样本耗时的历史最大值（cyc @80 MHz）；
+ *   `s_dt_over`    ：合计耗时超过 `ECG_DT_OVERRUN_CYC` 的次数。
+ * 🛑 与 `ecg_filter_t.dtcycles` 的区别：那个**只统计 CH1**（列⑥ 与历史可比），这三个是两路合计。 */
+static uint32_t s_out_desync   = 0u;
+static uint32_t s_dt_max_total = 0u;
+static uint32_t s_dt_over      = 0u;
+
+/* 两路合计耗时的告警门限：DRDY 周期 1172 µs @80 MHz = 93,760 cyc，取**一半**做门限。
+ * 依据：CH1 全链实测 ≈11,650 cyc（≈146 µs），两路预期 ≈290 µs；到 586 µs 已说明
+ * 有分支异常（例如某节被重复跑），不是正常波动。 */
+#define ECG_DT_OVERRUN_CYC   46880u
+
+/* ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------------
+ * 用途：常量图案下"线上把数据坏成什么样"可以直接读出来 —— 期望值已知 ⇒ 每个偏离的
+ *   字节偏移都能定位。这是本项目唯一能把"错在第几字节"定死的手段。
+ * 取值经 ASCII `test patt 0|ff|off` 设置（`off` 恢复真实样本）。
+ * 🛑 只覆盖**样本区**（`buff[8]` 起的 2·N·nch 字节）；帧头/SEQ/STA/CRC 不动，
+ *   且 CRC 按实际字节算 ⇒ 帧结构照常可校验。
+ * 🛑 临时功能，验收后删除（与 `vcomcmd.c` 的 `test patt` 同生共死）。 */
+static volatile uint32_t s_patt_en  = 0u;
+static volatile int16_t  s_patt_val = 0;
+
+void ads1293_set_test_pattern(uint32_t en, int16_t val)
+{
+    s_patt_val = val;
+    s_patt_en  = (en != 0u) ? 1u : 0u;
+}
+
+uint32_t ads1293_test_pattern_is_on(void)
+{
+    return s_patt_en;
+}
+
 /* ---- 853 原始流输出开关（2026-09-20 拍板；T54）--------------------------------
  * 0（默认）= 500 Hz 重采样输出，与既有上位机一致；
  * 1        = 每个 853 样本直接入队，行率 = DRDY 853.2423 Hz。
@@ -54,15 +102,16 @@ uint16_t        seQidx;
 static volatile uint32_t _braw853 = 0u;
 
 /* ---- 双通道(CH1+CH2)输出开关（★G8 2026-09-23；T125 拍板）-----------------------
- * 0（默认）= 单通道 59 B 帧，**逐位等同 G7 定稿** ⇒ 它就是回归基线的守护者；
- * 1        = 双通道 109 B 帧：载荷 `[CH1×N][CH2×N]` **块布局**（N = _popoutcnt = 25）。
- * ★ 本步（G8）CH2 的 N 个点 = **CH1 的 N 个点**（打包时直接复制，不为 CH2 做任何
- *   滤波/重采样）⇒ 上位机两个画布应**逐位完全相同**。这正是本步最硬的判据：
- *   块布局、LEN、CRC 覆盖长度、CH2 段偏移 四处只要错一处，两画布立刻不等。
- * ⚠ CH2 的**真值**（芯片 0x3A-0x3C）本步只走 ASCII 列⑦（ecgraw2），不进二进制帧。
+ * 1（**默认**，★T239 步2 按猛哥拍板 Q1 改）= 双通道 109 B 帧：载荷
+ *   `[CH1×N][CH2×N]` **块布局**（N = _popoutcnt = 25）；
+ * 0（回退档）= 单通道 59 B 帧，**逐位等同 G7 定稿** ⇒ 它是回归基线的守护者，
+ *   任何"帧结构有没有改坏"的疑问都用 `test ch2 off` 判。
+ * ★ G8 时 CH2 的 N 个点 = **CH1 的 N 个点**（打包时复制），那只是块布局的自证手段。
+ * ★★ T239 步2 起 CH2 是**真实数据**：`s_ctx2` 独立滤波 + `out2` 独立重采样
+ *   ⇒ 两画布**不再相同**（相反，"仍然相同"＝改漏了，见 T239 §6 判据）。
  * ⚠ 与 STA bit2 联动（见 ads1293_status_byte：开 ⇒ bit2=1 即 I&II）。
  * ⚠ 只读访问器在下面 ads1293_ch2_is_on()；命令入口 `test ch2 [on|off]`。 */
-static volatile uint32_t _bch2 = 0u;
+static volatile uint32_t _bch2 = 1u;
 
 /* ---- ★T163（2026-09-29）：ASCII 精简档 `ascii-2` 的状态位 ------------------------
  * 依据：猛哥 2026-09-29 对本项目 T162 §八 五问的拍板 ——
@@ -538,6 +587,10 @@ static void ads1293_filter_chain_init(void)
      *     `Filter/fast_restore_snippet.c` 的 `ecg_restore_ctx_chain_init()`；
      *     宏本身仍在 coeffs.h（单一真源不变），本函数只负责"什么时候初始化"。 */
     ecg_restore_chain_init();   /* ★T239：dc_block_init + f64_init（原为直调 g_dc/f64 两句）*/
+    /* ★T239 步2：CH2 的链与 CH1 **同批**初始化。
+     * 🛑 必须写在本函数内（别处补必漏一条 START 入口）：0x01 命令 / ASCII `test afe start` /
+     *    ads1293_reset_afe 三条入口都经这里。 */
+    ecg_restore_ctx_chain_init(&s_ctx2);
 #if ECG_RESTORE_AB_VERIFY
     ecg_restore_ref_chain_init();  /* 临时 A/B：旧实现参照实例，与上面同一批初始化 */
 #endif
@@ -545,6 +598,7 @@ static void ads1293_filter_chain_init(void)
     /* ★T232：每次（重新）起流把 LOD 状态机清零 —— 脱落状态属于"本次连接"，不跨段沿用 */
     ads1293_lod_state_reset();
     ecg_out_f32_init(&out);
+    ecg_out_f32_init(&out2);   /* ★T239 步2：CH2 重采样器与 CH1 **同批**复位（P1-2 锁步前提）*/
     ecg_restore_start();   /* ★T146：复位会话态（base/seen/blank/hold）+ 装载 START 静默窗。
                             *   ★T239 起它 = ecg_restore_ctx_session_start(&s_ctx1)，语义逐字不变。
                             *   它虽是独立编译单元，但在 dc_block **上游** ⇒ 残值同样跨 STOP 存活，
@@ -555,9 +609,17 @@ static void ads1293_filter_chain_init(void)
 #if ECG_RESTORE_AB_VERIFY
     ecg_restore_ref_start();   /* 临时 A/B：参照实例的会话态与 CH1 同步复位 */
 #endif
+    /* ★T239 步2：CH2 会话态与 CH1 **同时**复位 —— 两路各自的伪迹状态机必须同起点，
+     *   否则同一次上电两路的"首个台阶"落在不同样本上，形态对比失去意义。
+     *   ⚠ `restore_cnt` 与 CH1 一致：不清（它是统计量）。 */
+    ecg_restore_ctx_session_start(&s_ctx2);
     ecgfilteridx = 0;
     seQidx = 0;
     gdtover = 0;
+    /* ★T239 步2：CPU 观测随会话清零（口径＝本段起流以来），与 gdtover 的处置一致 */
+    s_out_desync   = 0u;
+    s_dt_max_total = 0u;
+    s_dt_over      = 0u;
     //filterdisp = 0.0;
 }
 
@@ -1153,6 +1215,9 @@ void ads1293_set_raw853(uint32_t on)
     } else {
         _braw853 = 0u;
         ecg_out_f32_init(&out);   /* ★ 复位重采样器，避免切回后的插值尖峰 */
+        ecg_out_f32_init(&out2);  /* ★T239 步2：CH2 同理 —— 两路必须**同时**复位，
+                                   *   否则 out 已复位、out2 还停在 853 之前的 y_prev
+                                   *   ⇒ 切回后两路输出点数差 1 ⇒ s_out_desync 立刻非 0。*/
     }
     queue_reset(&EcgQueueFilter);
 }
@@ -1163,7 +1228,8 @@ uint32_t ads1293_raw853_is_on(void)
 }
 
 /* ---- CH2 输出开关（★G8；命令 `test ch2 [on|off]`）------------------------------
- * on : 二进制显示帧切 **双通道 109 B**；off: 回 59 B 单通道（上电默认）。
+ * on : 二进制显示帧切 **双通道 109 B**（**★T239 步2 起为上电默认**，见 `_bch2` 初值）；
+ * off: 回 59 B 单通道（回退档，用于验证"帧结构没改坏"的回归基线）。
  * 🛑 切换**不碰任何滤波节点状态** ⇒ 无瞬态（与 raw853 不同，无需复位重采样器）。
  * ⚠ 不改变 `_popoutcnt` —— 帧长由 LEN 公式给（猛哥 2026-09-20 明确：减压别动它）。 */
 void ads1293_set_ch2(uint32_t on)
@@ -1174,6 +1240,26 @@ void ads1293_set_ch2(uint32_t on)
 uint32_t ads1293_ch2_is_on(void)
 {
     return _bch2;
+}
+
+/* ---- ★T239 步2：三个运行期观测量的只读访问器（ASCII `test chstat` 用）---------
+ * 为什么放这里、不放 Filter/：这些量描述的是**本文件这一层**（两路扇出、重采样锁步），
+ * `Filter/` 看不到"几路"。
+ * ⚠ 会话口径：三者都在 `ads1293_filter_chain_init()` 里随 START 清零
+ *   ⇒ 读到的永远是"本段起流以来"，与 `gdtover` 一致，别当全局累计。 */
+uint32_t ads1293_dt_max_cycles(void)   /* 两路合计耗时的**峰值**（cyc @80MHz） */
+{
+    return s_dt_max_total;
+}
+
+uint32_t ads1293_dt_over_count(void)   /* 两路合计超过 ECG_DT_OVERRUN_CYC 的次数 */
+{
+    return s_dt_over;
+}
+
+uint32_t ads1293_out_desync_count(void) /* 两个重采样器输出节拍不一致的次数（正常恒 0） */
+{
+    return s_out_desync;
 }
 
 /* ---- ★T239（2026-11-12）：滤波链设置/查询的设备层入口 ------------------------
@@ -1189,6 +1275,7 @@ uint32_t ads1293_ch2_is_on(void)
 void ads1293_set_notch(int on)
 {
     ecg_restore_ctx_set_notch(ecg_restore_ctx_ch1(), on);
+    ecg_restore_ctx_set_notch(&s_ctx2, on);   /* ★T239 步2：两路**同设置**（本组函数的唯一职责）*/
 #if ECG_RESTORE_AB_VERIFY
     ecg_restore_ref_set_notch(on);   /* 临时 A/B：参照实例同设置 */
 #endif
@@ -1197,6 +1284,7 @@ void ads1293_set_notch(int on)
 void ads1293_set_mode(int mon)
 {
     ecg_restore_ctx_set_mode(ecg_restore_ctx_ch1(), mon);
+    ecg_restore_ctx_set_mode(&s_ctx2, mon);   /* ★T239 步2：同上 */
 #if ECG_RESTORE_AB_VERIFY
     ecg_restore_ref_set_mode(mon);   /* 临时 A/B：参照实例同设置 */
 #endif
@@ -1506,6 +1594,8 @@ void ads1293_raw_popoutput(void)
     ecg_data_t    ecgdata;
     ecg_filter_t  ecgfilter;
     ecg_filter_t  ecgpopout[MAXPOP_QLEN];
+    double        f2 = 0.0;    /* ★T239 步2：CH2 滤波输出（code 域），本函数内两个分支共用 */
+    uint32_t      t_all = 0u;  /* ★T239 步2：两路**合计**耗时起点（口径≠dtcycles） */
     if(queue_len(&EcgQueueRaw)>=1)
     {
         queue_front_n(&EcgQueueRaw, &ecgdata.lod, 1, sizeof(ecgdata));
@@ -1518,6 +1608,8 @@ void ads1293_raw_popoutput(void)
         ecgfilter.ecgraw2 = ecgdata.ecgraw2;
         vlod = ecgdata.lod;
         verrsta = ecgdata.errsta;
+        /* ★T239 步2：两路合计耗时从这里起算（**dtcycles 仍只包 CH1**，见 ads1293.h 注释） */
+        t_all = DWT->CYCCNT;
         #if ECG_RESTORE_AB_VERIFY
             /* ★T239 步1 临时验证：同一输入喂两套实现，比 double 的**位模式**。
              * 旧实现的逐字拷贝见 Filter/fast_restore_snippet.c 末尾（宏=1 才编）。
@@ -1551,6 +1643,21 @@ void ads1293_raw_popoutput(void)
             }
         #endif
 
+        /* ★★ T239 步2（2026-11-12）：CH2 与 CH1 **同处、同频**各调一次。
+         *   🛑 输入口径照抄 `ecgraw2` 的 0~0xFFFFFF（N3）：`ads1293_ecg_ch()` 对该字段
+         *      故意**不做** 24-bit 符号扩展（`ads1293.c` 里那段被注释保留，改它等于改标定）
+         *      ⇒ CH2 擅自扩展会让两路量纲差 2^23，dc_block 的差分基准直接错位。
+         *   ⚠ 两路的伪迹状态机彼此独立（各有 base/seen/blank/hold）；但**读码坏两路同源**
+         *     （同一次 `read_reginc(0x37,6)` 突发）⇒ 独立判定**挡不住读码故障**（N2），
+         *     只能挡住"信号本身不同"。别把它当读码自检用。 */
+        f2 = ecg_restore_ctx_process(&s_ctx2, ecgfilter.ecgraw2);
+        {
+            /* 两路**合计**耗时（与 dtcycles 的 CH1-only 口径分开，见 ads1293.h） */
+            const uint32_t dt_all = DWT->CYCCNT - t_all;
+            if (dt_all > s_dt_max_total) s_dt_max_total = dt_all;
+            if (dt_all > ECG_DT_OVERRUN_CYC) s_dt_over++;
+        }
+
         if (_braw853) {
             /* 853 原始流模式（`test raw853 on`）：不重采样，每个 853 样本直接入队
              * ⇒ 输出行率 = DRDY = 853.2423 Hz（原为 500 Hz）。
@@ -1563,10 +1670,22 @@ void ads1293_raw_popoutput(void)
              *   停留在切换前的值；切回 off 时必须由 ads1293_set_raw853(0) 复位。 */
             ecgfilter.idxfilter = 0u;
             ecgfilter.dsrateraw = 0;
+            /* ★T239 步2：853 档不重采样 ⇒ CH2 与 CH1 **同口径**现场定标
+             *   （CH1 在打包段对 filterraw 做 codes_to_lsb，这里入队时就换算好，
+             *    于是两种模式在 `ch2_out` 上单位统一为 int16 LSB）。 */
+            ecgfilter.ch2_out = ecg_out_codes_to_lsb((float)f2);
             enqueue(&EcgQueueFilter, &ecgfilter);   //853hz
         } else {
             //降采样
-            if (ecg_out_f32_process(&out, ecgfilter.filterraw, &ecgfilter.dsrateraw)) {
+            const int o1 = ecg_out_f32_process(&out,  ecgfilter.filterraw, &ecgfilter.dsrateraw);
+            const int o2 = ecg_out_f32_process(&out2, (float)f2,         &ecgfilter.ch2_out);
+            /* ★T239 步2：两个重采样器必须**严格锁步**（同 tin/tout、同初相位、同输入节拍）
+             *   ⇒ 正常时 o1 == o2 恒成立。只按 o1 入队（CH1 是节拍基准），
+             *     但用 o2 的失步计数**自证**——判据 `s_out_desync == 0`。
+             *   ⚠ 若 o1 成立而 o2 不成立，本行环的 ch2_out 是**上一批的陈值**；
+             *     这种情况已被 desync 计到，先查锁步别去查数据。 */
+            if (o1 != o2) s_out_desync++;
+            if (o1) {
                 ecgfilter.idxfilter = ++ecgfilteridx;
                 enqueue(&EcgQueueFilter, &ecgfilter);  //500hz
             }
@@ -1728,13 +1847,30 @@ void ads1293_raw_popoutput(void)
                 int16_t v = _braw853
                           ? ecg_out_codes_to_lsb((float)ecgpopout[idx].filterraw)
                           : ecgpopout[idx].dsrateraw;
+                int16_t v2 = ecgpopout[idx].ch2_out;
+                /* ★T244（2026-11-12）**临时诊断**：测试图案 —— 把两路样本**强制成常量**。
+                 * 目的：常量图案下"线上坏成什么样"可以直接读出来（期望值已知 ⇒ 每个偏离的
+                 *   字节偏移都能定位），这是唯一能定到"错在第几字节"的手段。
+                 * 🛑 只覆盖**样本区**：帧头/TYPE/LEN/SEQ/STA/CRC 都保持原样，
+                 *   且 CRC 仍按 `buff[2..]` **实际字节**计算 ⇒ 帧结构可照常校验。
+                 * ⚠ 开图案后 CH1 段与 CH2 段**必然逐点相同** ⇒ 帧检查脚本的
+                 *   "CH1≠CH2"判据会报警，那是**预期**，别当回归失败。
+                 * ⚠ 临时功能：验收完把 `s_patt_en` 恒置 0（或整段删除），
+                 *   并在 `vcomcmd.c` 删除 `test patt`（两处同生共死）。 */
+                if (s_patt_en) {
+                    v  = s_patt_val;
+                    v2 = s_patt_val;
+                }
                 buff[8+idx*2+0] = (uint8_t)(v & 0xFF);
                 buff[8+idx*2+1] = (uint8_t)(((uint16_t)v >> 8) & 0xFF);
                 if (_bch2) {
-                    /* CH2 ≡ CH1（G8 拍板）：CH2 不做滤波/重采样，直接复制 CH1 的 N 个点
-                     * ⇒ 上位机两画布逐位相同 = 块布局与切分是否正确的**唯一硬判据**。 */
-                    buff[8+_popoutcnt*2+idx*2+0] = buff[8+idx*2+0];
-                    buff[8+_popoutcnt*2+idx*2+1] = buff[8+idx*2+1];
+                    /* ★★ T239 步2：CH2 段＝**真实 CH2**（不再是 CH1 的复制）。
+                     *   `ch2_out` 在两种模式下**单位统一为 int16 LSB**（853 档入队时
+                     *   已 `codes_to_lsb`，500 档由 `out2` 写入）⇒ 这里**不按 _braw853 分支**。
+                     *   🛑 判据反转（对比 G8 时代）：两画布**必须不再逐点相同**——
+                     *     若仍完全相同，说明还在复制，改动漏了（T239 §6）。 */
+                    buff[8+_popoutcnt*2+idx*2+0] = (uint8_t)(v2 & 0xFF);
+                    buff[8+_popoutcnt*2+idx*2+1] = (uint8_t)(((uint16_t)v2 >> 8) & 0xFF);
                 }
             }
             buff[8+nch*_popoutcnt*2] = ecg_crc8((const uint8_t*)&buff[2], (uint32_t)(6+nch*_popoutcnt*2));
