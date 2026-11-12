@@ -17,10 +17,14 @@
 #include "esp_timer.h"
 
 #include "app_config.h"
+#include "app_state.h"
 #include "ecg_pipeline.h"
 #include "ui_waveform.h"
 
 static const char *TAG = "ui_bpm";
+
+/* ★T232-C2：导联状态图标（定义在文件后部，tick 里要用 ⇒ 前置声明） */
+static void ico_sync(void);
 
 static lv_obj_t         *s_box;
 static lv_obj_t         *s_lbl_val;
@@ -95,6 +99,10 @@ static void on_bpm_tick(lv_timer_t *t)
 {
     (void)t;
 
+    /* ★T232-C2：导联图标**先于冻结判断**同步 —— 脱落是事实，冻结只是画面停更，
+     *   冻结期间仍然必须能看到"导联掉了"。 */
+    ico_sync();
+
     /* 冻结：保持冻结时刻的值（需求 §8.3「冻结期间 BPM 保持冻结时刻的值」） */
     if (ui_waveform_is_frozen()) {
         return;
@@ -112,6 +120,107 @@ static void on_bpm_tick(lv_timer_t *t)
 /* ============================================================================
  * 对外接口
  * ========================================================================== */
+
+/* ============================================================================
+ * ★T232-C2（2026-11-11）：BPM 左侧的「导联线状态」图标
+ *
+ * 需求（猛哥 18:05）：**导联正常 = 导联线图标；脱落 = 图标打红叉**。
+ *
+ * 为什么用 LVGL 图元画、而不是用符号/图片：
+ *   · 本项目**从未启用 LV_SYMBOL_***（全工程零引用），字体不一定带符号；
+ *   · 用图片要加 RGB565 素材 + 解码，对 34×34 的小图标不划算；
+ *   · 图元绘制的开销与 label 同级（静态图形，只在状态变化时改颜色/显隐）。
+ *
+ * 状态来源：`app_state_ro()->sta` 的 **bit4**（= 任意输入脱落，T232 §13.1）。
+ *   未收到 STA（has_sta=false）时画成暗灰 —— 表示"不知道"，不要伪装成正常。
+ *
+ * 位置：BPM 盒 160×50，数字右对齐在 -58、单位在 -14 ⇒ 左侧 ~66 px 是空的，
+ *       图标占 x=6..40，不会压到读数。
+ * ========================================================================== */
+static lv_obj_t *s_ico_wire;    /* 导联线（折线） */
+static lv_obj_t *s_ico_dot;     /* 电极（小圆点） */
+static lv_obj_t *s_ico_x1;      /* 红叉 ① */
+static lv_obj_t *s_ico_x2;      /* 红叉 ② */
+static bool      s_ico_lod;     /* 当前是否显示"脱落"态 */
+static bool      s_ico_valid;   /* 是否已收到过 STA */
+
+/* ⚠ 必须是静态生命周期：lv_line 只保存指针，不拷贝点数组 */
+static lv_point_t PTS_WIRE[] = {{2, 26}, {10, 26}, {10, 8}, {22, 8}, {22, 18}, {30, 18}};
+
+/* 叉的大小（猛哥 18:10：原来的 3..31 太大，把整条导联线全盖住了）。
+ * 现值 14×14，中点 (16,17) = 导联线包围盒中心，线宽 3→2；
+ * 缩到线的 1/2 后，叉只压住中段，两端折线仍露在外面 ⇒ 一眼能看出"是导联掉了"。 */
+static lv_point_t PTS_X1[]   = {{9, 10}, {23, 24}};
+static lv_point_t PTS_X2[]   = {{23, 10}, {9, 24}};
+
+#define ICO_C_NORMAL   0xC8CDD2u   /* 亮灰：正常 */
+#define ICO_C_LOD      0xFF5252u   /* 红：脱落 */
+#define ICO_C_DIM      0x5A5F63u   /* 暗灰：还没有 STA（状态未知） */
+
+static void ico_apply(void)
+{
+    const uint32_t c = (!s_ico_valid) ? ICO_C_DIM : (s_ico_lod ? ICO_C_LOD : ICO_C_NORMAL);
+
+    lv_obj_set_style_line_color(s_ico_wire, lv_color_hex(c), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ico_dot,    lv_color_hex(c), LV_PART_MAIN);
+
+    if (s_ico_valid && s_ico_lod) {
+        lv_obj_clear_flag(s_ico_x1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_ico_x2, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_ico_x1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ico_x2, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void ico_create(lv_obj_t *parent)
+{
+    s_ico_wire = lv_line_create(parent);
+    lv_line_set_points(s_ico_wire, PTS_WIRE, (uint16_t)(sizeof(PTS_WIRE) / sizeof(PTS_WIRE[0])));
+    lv_obj_set_style_line_width(s_ico_wire, 2, LV_PART_MAIN);
+    lv_obj_set_pos(s_ico_wire, 4, 4);
+
+    s_ico_dot = lv_obj_create(parent);
+    lv_obj_set_size(s_ico_dot, 6, 6);
+    lv_obj_set_style_radius(s_ico_dot, 3, LV_PART_MAIN);   /* 圆点 */
+    lv_obj_set_style_border_width(s_ico_dot, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_ico_dot, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(s_ico_dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_ico_dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(s_ico_dot, 27, 19);
+
+    s_ico_x1 = lv_line_create(parent);
+    lv_line_set_points(s_ico_x1, PTS_X1, 2);
+    lv_obj_set_style_line_width(s_ico_x1, 2, LV_PART_MAIN);
+    lv_obj_set_style_line_color(s_ico_x1, lv_color_hex(ICO_C_LOD), LV_PART_MAIN);
+    lv_obj_set_pos(s_ico_x1, 4, 4);
+
+    s_ico_x2 = lv_line_create(parent);
+    lv_line_set_points(s_ico_x2, PTS_X2, 2);
+    lv_obj_set_style_line_width(s_ico_x2, 2, LV_PART_MAIN);
+    lv_obj_set_style_line_color(s_ico_x2, lv_color_hex(ICO_C_LOD), LV_PART_MAIN);
+    lv_obj_set_pos(s_ico_x2, 4, 4);
+
+    s_ico_lod = false;
+    s_ico_valid = false;
+    ico_apply();
+}
+
+/** 每 tick 同步一次图标状态（只有变化才动样式 ⇒ 零成本） */
+static void ico_sync(void)
+{
+    const app_state_t *st = app_state_ro();
+    const bool valid = (st != NULL) && st->has_sta;
+    const bool lod   = valid && ((st->sta & 0x10u) != 0u);   /* bit4 = 任意输入脱落 */
+
+    if (valid == s_ico_valid && lod == s_ico_lod) {
+        return;
+    }
+    s_ico_valid = valid;
+    s_ico_lod   = lod;
+    ico_apply();
+    ESP_LOGI(TAG, "lead icon -> %s", !valid ? "unknown" : (lod ? "LEAD-OFF" : "ok"));
+}
 
 esp_err_t ui_bpm_create(lv_obj_t *scr)
 {
@@ -150,7 +259,9 @@ esp_err_t ui_bpm_create(lv_obj_t *scr)
     lv_obj_align(s_lbl_unit, LV_ALIGN_RIGHT_MID, -14, 8);
 
     snprintf(s_shown, sizeof(s_shown), "%s", "--");
-    apply_theme(&UI_THEME_DARK);            /* 与画布/按钮栏的默认一致，见 ui_waveform.c */
+    apply_theme(&UI_THEME_DARK);
+
+    ico_create(s_box);                      /* ★T232-C2：导联状态图标（在最左） */            /* 与画布/按钮栏的默认一致，见 ui_waveform.c */
 
     lv_timer_create(on_bpm_tick, APP_BPM_UPDATE_MS, NULL);
 

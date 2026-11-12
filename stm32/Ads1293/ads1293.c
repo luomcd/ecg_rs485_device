@@ -11,7 +11,7 @@
 /* ★T232（2026-11-11）：LOD 首次启用（台架阶段）。
  * 开关值 → regs_leaderIII 的 #if 分支：0x06=0x00(DC 工作) / 0x07=0x07(IN1~IN3) / 0x08=0x01(8 nA)。
  * 🛑 不用 T215 当年的 0x07=0x0F / 0x08=0xFF：
- *    · 0x0F 含 IN4 —— IN4 是 RLD 输出点（0x0C=0x04 ⇒ SELRLD=100），对它做脱落检测无意义且扰动 RLD 环路；
+ *    · 0x0F 含 IN4 —— IN4 被 RLD 放大器输出驱动（0x0C=0x04 ⇒ SELRLD=100 内部路由到 IN4，本设计有意为之：RLD 经 IN4→AECG N1 形成 LOD 回流；令 RLDOUT/pin9 闲置），非电极输入，禁开；
  *    · 0xFF = 2.04 µA/路，三路合计 6.12 µA（±25% 最坏 7.65 µA），患者辅助电流余量太小；改 8 nA 起步。
  * 见 docs/T232 §15.3。 */
 #define ECG_LOD_EN            1 
@@ -341,7 +341,7 @@ const uint8_t regs_leaderIII[][2] =
     {0x05, 0x00},
 #if ECG_LOD_EN   
     {0x06, 0x00},   /* LOD_CN：SHDN_LOD=0 工作 / SELAC_LOD=0 DC 模式 / ACLVL=00 */
-    {0x07, 0x07},   /* LOD_EN：IN1+IN2+IN3（★不是 0x0F —— IN4 是 RLD 输出点，不得使能） */
+    {0x07, ECG_LOD_MASK},   /* LOD_EN：IN1+IN2+IN3（掩码唯一定义在 ads1293.h；★不含 IN4 —— 它被 RLD 输出驱动） */
     {0x08, 0x01},   /* LOD_CURRENT：8 nA 起步（不是 0xFF=2.04 µA） */
 #else
     {0x06, 0x08},
@@ -352,7 +352,7 @@ const uint8_t regs_leaderIII[][2] =
     {0x0a, 0x07},
   //  {0x0a, 0x03},
     {0x0b, 0x00},
-    {0x0c, 0x04},
+    {0x0c, 0x04},   /* RLD_CN：SELRLD=100 ⇒ RLD 输出内部路由到 IN4（★本设计有意：经 IN4→AECG N1 提供 LOD 回流，RLDOUT/pin9 闲置） */
     {0x0d, 0x00},
     {0x0e, 0x00},
     {0x0f, 0x00},
@@ -484,7 +484,7 @@ void ads1293_lod_poll(void)
     s_lod_raw = raw;
 
     if (raw != 0u) {
-        s_lod_latched |= raw;   /* ★读后清零 ⇒ 必须自己锁存 */
+        s_lod_latched |= (uint8_t)(raw & ECG_LOD_MASK);   /* ★读后清零 ⇒ 必须自己锁存；只留已启用输入 */
         s_lod_clear_cnt = 0u;
         if (s_lod_assert_cnt < LOD_ASSERT_CNT) {
             s_lod_assert_cnt++;
@@ -1291,7 +1291,7 @@ uint32_t ads1293_ascii2_col(uint32_t which)
  *   bit1 notch   0 = off  ／ 1 = on     ← ecg_filter_f64_notch_is_on(&f64)
  *   bit2 channel 0 = I    ／ 1 = I&II   ← ads1293_ch2_is_on()（★G8 起随 `test ch2` 变化）
  *   bit3 raw853  0 = off  ／ 1 = on     ← ads1293_raw853_is_on()
- *   bit4 LOD     0 = 正常 ／ 1 = 脱落    ← ★本步恒 0：ECG_LOD_EN=0 ⇒ LOD 未使能
+ *   bit4 LOD     0 = 正常 ／ 1 = 脱落    ← ★T232 起恒有效（ECG_LOD_EN=1，旧注释"恒 0"已作废）
  *   bit5~7 保留 0
  *
  * 🛑 硬约束（协议 §4）：**必须运行期读取，不得用编译期宏**。
@@ -1316,12 +1316,15 @@ uint8_t ads1293_status_byte(void)
     if (ads1293_raw853_is_on()) {
         sta |= 0x08u;   /* bit3 raw853 */
     }
-    /* ★T232：bit4 = **任意输入脱落**（完整性提示；猛哥 2026-11-11 17:24 定语义）。
-     * 数据源 = 低频轮询 + 软件锁存 + 非对称防抖后的 `s_lod_stable`。
-     * ⚠ 它表达"任一路脱落"，**不等于"当前 QRS 通道无效"**——
-     *    QRS 门控应另判 `CH1 invalid = IN1 off || IN2 off`（见 T232 §15.2）。 */
-    if (s_lod_stable != 0u) {
-        sta |= 0x10u;
+    /* ★T232 bit4 = **任意启用输入脱落**（完整性提示，屏上图标用；猛哥 11-11 17:24 定语义）。
+     * ★任务3 bit5 = **CH1_INVALID**（门控用；判据由 ECG_LOD_GATE_POLICY 决定，见 ads1293.h）。
+     *   两者分开的意义：拔 IN3 时 bit4=1（出红叉）但 bit5=0（不停测）。
+     *   数据源都是防抖后的 `s_lod_stable`，不再是原始值。 */
+    if ((s_lod_stable & ECG_LOD_MASK)      != 0u) {
+        sta |= 0x10u;   /* bit4：任意启用输入脱落 */
+    }
+    if ((s_lod_stable & ECG_LOD_GATE_CRIT) != 0u) {
+        sta |= 0x20u;   /* bit5：CH1_INVALID（POLICY=0 看 IN1|IN2／=1 看全部） */
     }
 
     return sta;

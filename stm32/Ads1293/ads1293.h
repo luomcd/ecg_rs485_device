@@ -165,9 +165,40 @@ uint8_t  ads1293_status_byte(void);
  * 手册 §8.3.24：0x18~0x1E 的错误位是「锁存 + 读后清零」⇒ 逐样本读会把锁存吃掉。
  * 因此改为低频轮询 + 软件锁存 + 非对称防抖。
  *   ads1293_lod_poll()   主循环每轮调用（内部 20 ms 自节流）
- *   ads1293_lod_stable() 防抖后的脱落位：bit0=IN1 / bit1=IN2 / bit2=IN3
+ *   ads1293_lod_stable() 防抖后的脱落位：**bit0=IN1 / bit1=IN2 / bit2=IN3**（位序固定，勿改）
  *   ads1293_lod_raw()    最近一次原始读值（诊断用）
- * 对外语义（STATUS.bit4）= **任意输入脱落**（完整性提示），不等于"QRS 通道无效"。 */
+ * 对外语义（STATUS.bit4）= **任意输入脱落**（完整性提示），不等于"QRS 通道无效"。
+ *
+ * ★T235 §3.2（2026-11-12）：**LOD 使能掩码的唯一真源 = ECG_LOD_MASK**。
+ *   寄存器表 `{0x07, ECG_LOD_MASK}` 与软件锁存 `latched |= raw & ECG_LOD_MASK` 都用它，
+ *   避免"表里写 0x07、锁存写 0x0F"这类两处魔数不同步（本项目在 regs_shorted 上踩过一次）。
+ *   🛑 改掩码时**必须同时**确认 IN4 仍在掩码外：IN4 被 RLD 输出驱动（SELRLD=100），
+ *      不是待检测电极，使能它会把 RLD 环路扰动算成"脱落"（T234 §2.2.5）。
+ * 使能 IN1+IN2+IN3 = 0x07；IN4 = bit3，禁开。 */
+#define ECG_LOD_MASK  0x07u
+
+/* ---- ★任务3（2026-11-12 猛哥拍板"按 B"）：C-3 门控判据的策略开关 ------------
+ * 背景：ESP32/上位机只拿到汇总位，**无法区分**"IN1/IN2 掉"与"IN3 掉"。
+ *       因此由本端（知道逐输入掩码的一方）算出 `CH1_INVALID`，走 **STA bit5** 上报；
+ *       bit4 保持"任意启用输入脱落"不变（屏上图标继续用它，拔 IN3 仍出红叉）。
+ *
+ *   ECG_LOD_GATE_POLICY = 0（默认，当前）：仅 **IN1|IN2** 任一脱落 ⇒ bit5=1
+ *                                        （IN3 掉：bit4=1 出红叉，但不停测）
+ *                       = 1            ：**任意已启用输入**脱落 ⇒ bit5=1
+ *                                        （IN3 掉、回流断也算；最保守）
+ *
+ * 🛑 改策略只需重编 STM32，ESP32/上位机不用动（它们只认 bit5 的值）。
+ * 🛑 CH2 说明：`ch2=on` 时 CH2 是 CH1 的逐点复制 ⇒ CH1 失效即两路失效，
+ *    所以策略 0 在当前实现下等价于"任意通道无效"，是安全的默认值。 */
+#define ECG_LOD_CH1_MASK      0x03u   /* bit0=IN1、bit1=IN2：决定 CH1 有效性的两路 */
+#define ECG_LOD_GATE_POLICY   0       /* 0 = 仅 CH1 无效（默认）／1 = 任意 LOD */
+
+#if (ECG_LOD_GATE_POLICY == 0)
+#define ECG_LOD_GATE_CRIT     ECG_LOD_CH1_MASK   /* 只看 IN1|IN2 */
+#else
+#define ECG_LOD_GATE_CRIT     ECG_LOD_MASK       /* 任意已启用输入（含 IN3、含回流断） */
+#endif
+
 void    ads1293_lod_poll(void);
 uint8_t ads1293_lod_stable(void);
 uint8_t ads1293_lod_raw(void);
