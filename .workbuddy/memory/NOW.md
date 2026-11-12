@@ -15,7 +15,8 @@
 | `T237`/`T238` | 方案 B 获批准；8 条 P0/P1 待处置 |
 | **`T239` 处置（已拍板）** | 驳回 P0-3、升级 P1-4、补 N1~N3，4 项拍板见下 |
 | **`T242` ESP32 显示** | 删画布2 `"no data"`；`s_dual` 初值 **true**；已烧录 |
-| **`T239` 步2 已上板（11-12 15:55）** | `s_ctx2`+`out2` 独立链、`ch2_out@18`、`dtcycles→uint32`、`_bch2=1`；**109 B 帧 192/192 帧 CH1≠CH2**（真实两路）；`chstat` ⇒ `desync=0 dtmax=325us over=0`；帧率 **19.97 fps**；⚠ 链路 `crc_err` **1.09%**（拔掉 485→USB 后照旧 ⇒ 不是它，量级同「缺 +5V」签名） |
+| ⚠ **步3 阶段②（11-12 18:20）** | 改线 IN2←N2/IN3←RA 后实测：CH1 p2p **2.86 mV**、CH2 **0.12 mV**、同号率 50.9% ⇒ **CH2 无 QRS、不达标**（与"有波形"的口头判断不符，待核接线/信号源） |
+| **`T239` 步2（11-12）** | `s_ctx2`+`out2` 独立链、`ch2_out@18`、`dtcycles→uint32`、`_bch2=1`；109 B 帧 CH1≠CH2 192/192；`desync=0 dtmax=325us`、19.97 fps |
 | **`T240` 步1（11-12）** | `g_dc/f64`+5 static → `ecg_restore_ctx s_ctx1`(976 B)；**CH1 逐位不变**（板端＋主机 40 万样本 `mismatch=0`）；SRAM −16 B / Flash +249 B |
 
 **4 项拍板**
@@ -41,8 +42,7 @@ TTL 直连 **0.17~0.25%**（≈8 倍差，且不再丢字节）⇒ **RS485 段�
 - 本板 **ASCII 控制台不在 PC 侧**：`comm_port.h:49 ECG_COMM_PORT=UART5` ⇒ `printf_msg` 全走
   UART5→RS485→**ESP32**。COM3=ST-Link VCP（无字节）／COM33/34=J-Link／**COM35=ESP32 `cardiolite>`**；
   STM32 原生 USB 口**没插**。⇒ 要读 STM32 状态只能经 ESP32（`485-stat` 的 `raw=0x..`／STA 保留位）。
-- 🛑 **`stop`→改 notch/mode→`start` 无效**：`filter_chain_init` 的 `f64_init` 会把 notch 写回"开"、
-  mode 写回 diag（fail-safe）⇒ **必须先 START 再改设置**。
+- 🛑 **`stop`→改 notch/mode→`start` 无效**（`f64_init` 把 notch 写回开、mode 写回 diag）⇒ **先 START 再改**。
 - 🛑 **`485-send` 每发一条会打坏上行流 1~3 个 `crc_err`** ⇒ 命令偶尔静默丢，重发即中。
 - ✅ **COM26 = CH340（485→USB）＝STM32 ASCII 控制台**：`python stm32/tools/_rs485_cli.py "test chstat"`。
   RTS 是方向控制；**开串口会复位 ESP32**（DTR/RTS），故 COM35 的 `485-start`/`485-send`/`485-stat` 必须一次会话做完。

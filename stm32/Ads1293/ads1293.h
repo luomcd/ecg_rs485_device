@@ -184,16 +184,6 @@ uint32_t ads1293_dt_max_cycles(void);    /* 两路合计耗时峰值（cyc）；
 uint32_t ads1293_dt_over_count(void);    /* 合计耗时 > 46880 cyc(586 µs = DRDY 一半) 的次数 */
 uint32_t ads1293_out_desync_count(void); /* 两个重采样器输出节拍不一致的次数（正常恒 0） */
 
-/* ---- ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------
- * 用途：把两路样本强制成常量，用来判"线上把数据坏成什么样"—— 期望值已知 ⇒ 每个偏离
- *   的字节**偏移**都能定位（真实 ECG 数据做不到这一点）。
- * 只覆盖样本区，帧头/SEQ/STA/CRC 与 CRC 计算都不动 ⇒ 帧结构照常校验。
- * ⚠ 开了图案之后 CH1 段与 CH2 段必然逐点相同 ⇒ 帧检查脚本的"CH1≠CH2"判据会报警，
- *   那是**预期**，不是回归失败。
- * 🛑 验收完删除本组函数与 `vcomcmd.c` 的 `test patt`（同生共死）。 */
-void     ads1293_set_test_pattern(uint32_t en, int16_t val);
-uint32_t ads1293_test_pattern_is_on(void);
-
 /* ---- ★T239（2026-11-12）：滤波链设置/查询的设备层入口 --------------------
  * 引入原因：`g_dc`/`f64` 两个全局已并入 `ecg_restore_ctx`（Filter/ecg_filter.h），
  *   分派层（vcomcmd.c）不能再直写滤波实例；同时**实例扇出必须集中一处**，

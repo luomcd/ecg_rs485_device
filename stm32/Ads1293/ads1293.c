@@ -73,26 +73,13 @@ static uint32_t s_dt_over      = 0u;
  * 有分支异常（例如某节被重复跑），不是正常波动。 */
 #define ECG_DT_OVERRUN_CYC   46880u
 
-/* ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------------
- * 用途：常量图案下"线上把数据坏成什么样"可以直接读出来 —— 期望值已知 ⇒ 每个偏离的
- *   字节偏移都能定位。这是本项目唯一能把"错在第几字节"定死的手段。
- * 取值经 ASCII `test patt 0|ff|off` 设置（`off` 恢复真实样本）。
- * 🛑 只覆盖**样本区**（`buff[8]` 起的 2·N·nch 字节）；帧头/SEQ/STA/CRC 不动，
- *   且 CRC 按实际字节算 ⇒ 帧结构照常可校验。
- * 🛑 临时功能，验收后删除（与 `vcomcmd.c` 的 `test patt` 同生共死）。 */
-static volatile uint32_t s_patt_en  = 0u;
-static volatile int16_t  s_patt_val = 0;
-
-void ads1293_set_test_pattern(uint32_t en, int16_t val)
-{
-    s_patt_val = val;
-    s_patt_en  = (en != 0u) ? 1u : 0u;
-}
-
-uint32_t ads1293_test_pattern_is_on(void)
-{
-    return s_patt_en;
-}
+/* ★T244（2026-11-12）临时诊断"测试图案"**已按计划删除**（2026-11-12 18:20 清理）。
+ * 它当时的作用：把两路样本强制成常量（全 0 / 全 FF），配合 PC 侧 `--pattern` 逐字节
+ *   比对，把上行坏点定位到**具体字节偏移** —— 本轮据此定死了"坏点在帧首+3/帧尾−2、
+ *   坏值恒为清位"⇒ 物理层问题（详见 docs/T244）。
+ * 🛑 不要因为"调试方便"再把开关放回打包热路径：它绕过了真实样本，
+ *   一旦忘记关闭，屏上就是一条假平线，且 `_bch2` 的两段会逐点相同（判据失效）。
+ * 需要再取证时：用 git 里的 `30c...`/`a302bef` 版本编译一版临时固件即可。 */
 
 /* ---- 853 原始流输出开关（2026-09-20 拍板；T54）--------------------------------
  * 0（默认）= 500 Hz 重采样输出，与既有上位机一致；
@@ -1847,20 +1834,7 @@ void ads1293_raw_popoutput(void)
                 int16_t v = _braw853
                           ? ecg_out_codes_to_lsb((float)ecgpopout[idx].filterraw)
                           : ecgpopout[idx].dsrateraw;
-                int16_t v2 = ecgpopout[idx].ch2_out;
-                /* ★T244（2026-11-12）**临时诊断**：测试图案 —— 把两路样本**强制成常量**。
-                 * 目的：常量图案下"线上坏成什么样"可以直接读出来（期望值已知 ⇒ 每个偏离的
-                 *   字节偏移都能定位），这是唯一能定到"错在第几字节"的手段。
-                 * 🛑 只覆盖**样本区**：帧头/TYPE/LEN/SEQ/STA/CRC 都保持原样，
-                 *   且 CRC 仍按 `buff[2..]` **实际字节**计算 ⇒ 帧结构可照常校验。
-                 * ⚠ 开图案后 CH1 段与 CH2 段**必然逐点相同** ⇒ 帧检查脚本的
-                 *   "CH1≠CH2"判据会报警，那是**预期**，别当回归失败。
-                 * ⚠ 临时功能：验收完把 `s_patt_en` 恒置 0（或整段删除），
-                 *   并在 `vcomcmd.c` 删除 `test patt`（两处同生共死）。 */
-                if (s_patt_en) {
-                    v  = s_patt_val;
-                    v2 = s_patt_val;
-                }
+                const int16_t v2 = ecgpopout[idx].ch2_out;
                 buff[8+idx*2+0] = (uint8_t)(v & 0xFF);
                 buff[8+idx*2+1] = (uint8_t)(((uint16_t)v >> 8) & 0xFF);
                 if (_bch2) {

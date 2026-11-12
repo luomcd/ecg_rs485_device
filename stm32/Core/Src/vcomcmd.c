@@ -410,40 +410,11 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
         return;
     }
 
-    /* ---- ★T244（2026-11-12）**临时诊断**：上行样本区的测试图案 ---------------------
-     * 用法：`test patt 0`（样本全 0x0000）／`test patt ff`（全 0xFFFF）／`test patt off`
-     * 为什么两个图案都要：坏法分两种，一种图案只能看见一半 ——
-     *   `0`  → 只看得到"位被**置** 1"（0 变非 0）；
-     *   `ff` → 只看得到"位被**清** 0"（1 变 0；本项目实测的坏法正是这种）。
-     * ⇒ 判定"线上坏成什么样"必须两种都跑一遍，别只跑一种就下结论。
-     * 🛑 只覆盖**样本区**：帧头/TYPE/LEN/SEQ/STA/CRC 都保持真实值，CRC 也按实际字节算
-     *   ⇒ 帧结构与 CRC 校验照旧有效（这一点是它能当取证工具的前提）。
-     * 🛑 命令名 `patt` 已查过前缀不冲突（既有子命令无 `p` 开头）。
-     * 🛑 临时功能：验收完与 `ads1293_set_test_pattern()` 一起删除。
-     * 🛑 必须带 `\r\n`。 */
-    if( argc== 3 && memcmp(argv[1],"patt",4)==0)
-    {
-        if( memcmp(argv[2],"off",3)==0)
-        {
-            ads1293_set_test_pattern(0u, 0);
-            printf_msg("patt off\r\n");
-            return;
-        }
-        if( memcmp(argv[2],"0",1)==0)
-        {
-            ads1293_set_test_pattern(1u, (int16_t)0x0000);
-            printf_msg("patt 0000\r\n");
-            return;
-        }
-        if( memcmp(argv[2],"ff",2)==0)
-        {
-            ads1293_set_test_pattern(1u, (int16_t)-1);   /* 0xFFFF */
-            printf_msg("patt ffff\r\n");
-            return;
-        }
-        printf_msg("usage: test patt [0|ff|off]\r\n");
-        return;
-    }
+    /* ★T244（2026-11-12）临时诊断 `test patt 0|ff|off` **已删除**（同日 18:20 清理）。
+     * 它把两路样本强制成常量，配合 PC 侧 `--pattern` 逐字节比对来定位坏点；
+     * 结论已固化到 docs/T244（坏点在帧首+3/帧尾−2、坏值恒"清位" ⇒ 物理层）。
+     * 🛑 别为了"临时看看"再加回来：它绕过真实样本，忘关就是一条假平线。
+     * 需要复现取证时用 git 的 a302bef 版本编一版临时固件。 */
 
     /* ---- ★T239 步2（2026-11-12）：CH2/CPU 运行期观测 ------------------------------
      * 用法：`test chstat`（**只读**，不清零；清零随 START 发生在
