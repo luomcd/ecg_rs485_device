@@ -267,7 +267,7 @@ void ecg_sta_to_str(uint8_t sta, bool has_sta, char *buf, size_t buf_size)
         snprintf(buf, buf_size, "unknown(no STA)");
         return;
     }
-    snprintf(buf, buf_size, "%s notch=%s ch=%s raw853=%d lod=%d",
+    snprintf(buf, buf_size, "%s notch=%s ch=%s raw853=%d lod=%d ch1inv=%d",
              /* bit0：0=diag（诊断）／1=mon（监护）
               * 依据协议 §5.1 `0x04 SET_MODE` 的 ARG 定义「1 B：0=diag／1=mon」，
               * 以及「下一帧 STA.bit0」的回读契约。
@@ -276,5 +276,8 @@ void ecg_sta_to_str(uint8_t sta, bool has_sta, char *buf, size_t buf_size)
              (sta & ECG_STA_BIT_NOTCH) ? "on" : "off",
              (sta & ECG_STA_BIT_CHANNEL) ? "I&II" : "I",
              (sta & ECG_STA_BIT_RAW853) ? 1 : 0,
-             (sta & ECG_STA_BIT_LOD) ? 1 : 0);
+             (sta & ECG_STA_BIT_LOD) ? 1 : 0,
+             /* ★2026-11-12（协议 v2.4）：bit5 = CH1_INVALID。
+              * 只显示、不参与任何判决 —— 本轮 ESP32 门控未接（T234 §4.5）。*/
+             (sta & ECG_STA_BIT_CH1INV) ? 1 : 0);
 }

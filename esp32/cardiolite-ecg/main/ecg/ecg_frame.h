@@ -77,6 +77,12 @@
 #define ECG_STA_BIT_RAW853  (1u << 3)
 #define ECG_STA_BIT_LOD     (1u << 4)
 
+/* ★2026-11-12（协议 v2.4）：CH1 是否可用，**门控专用**。
+ * 与 bit4 的分工：bit4 = 任意启用输入脱落（提示），bit5 = CH1 不可用（门控）。
+ * 典型差异：拔 IN3 时 bit4=1 但 bit5=0（CH1 仍有效）；拔 IN1/IN2 或回流断时两者都为 1。
+ * ⚠ 本固件**暂未消费**此位（门控动作未接，见 docs/T234 §4.5），只在 `485-stat` 里显示。 */
+#define ECG_STA_BIT_CH1INV  (1u << 5)
+
 /* 无 STA 的旧帧，三参数状态未知时的哨兵（不得伪装成已知值） */
 #define ECG_STATE_UNKNOWN   0xFF
 
