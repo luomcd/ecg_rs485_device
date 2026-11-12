@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "biquad.h"
 #include "ecg_filter_coeffs.h"
+#include "ecg_dc_block.h"   /* ★T239：ecg_restore_ctx 内嵌 ecg_dc_block（按值持状态） */
 
 #ifdef __cplusplus
 extern "C" {
@@ -220,8 +221,87 @@ float ecg_gate_f32_process(ecg_gate_f32 *gt, int ok);
  *   完整链: raw(int32_t) -> ecg_dc_block_process() -> ecg_chain_*(去直流后的值) */
 float  ecg_chain_f32(ecg_filter_f32 *f, ecg_gate_f32 *gt, float x, int ok);
 double ecg_chain_f64(ecg_filter_f64 *f, ecg_gate_f32 *gt, double x, int ok);
+
+/* =========================================================================
+ * ★T239 步1（2026-11-12）：**通道上下文** —— 把滤波入口改成可实例化
+ *
+ * 背景：`ecg_restore_process()` 原先直接吃 `Ads1293/ads1293.c` 里的两个全局
+ *   `g_dc` / `f64`，再配 5 个文件级 static ⇒ **全链只有一个实例**。
+ *   CH2 要走同一条链（T237/T239），就必须把这些状态打包成结构体。
+ *
+ * 现状（步1）：只建 `s_ctx1` 一个实例，`ads1293.c` 调用点签名不变；
+ *   **行为必须逐位不变**，验收＝同固件 A/B 双跑（T239 §4.1，宏 `ECG_RESTORE_AB_VERIFY`）。
+ *
+ * 两层初始化的分工（🛑 不要合并，合并后"链复位"会连会话态一起清）：
+ *   `ecg_restore_ctx_chain_init()`   ：dc_block + f64 的**系数与节点状态**
+ *                                      ≡ 旧的 `ecg_dc_block_init(&g_dc,..)` + `ecg_filter_f64_init(&f64)`
+ *   `ecg_restore_ctx_session_start()`：base/seen/blank/hold + START 静默窗
+ *                                      ≡ 旧的 `ecg_restore_start()`
+ *   ⚠ 调用顺序必须与原 `ads1293_filter_chain_init()` 一致：先 chain_init，末尾 session_start。
+ *
+ * typeof 尺寸（按 A+B 档实算）：dc 40 + flt 912 + base 8 + startup 4 + restore_cnt 4
+ *   + hold 2 + seen 1 + blank 1 = 972 → 对齐 8 ⇒ **976 B**。
+ *   🛑 实测以 `sizeof` 为准，别按字段相加（见 T239 §5 的离线断言脚本做法）。
+ * ========================================================================= */
+typedef struct {
+    ecg_dc_block   dc;           /*   40 B：去直流（含预热快相） */
+    ecg_filter_f64 flt;          /*  912 B：A+B(D3) 档 16 节（含 notch_on / mode） */
+    double         base;         /*    8 B：慢基线（伪迹判据用，非链内状态） */
+    uint32_t       startup;      /*    4 B：START 静默窗剩余样本 */
+    uint32_t       restore_cnt;  /*    4 B：进入伪迹态次数（统计量，**不复位**） */
+    uint16_t       hold;         /*    2 B：空白态保持计数 */
+    uint8_t        seen;         /*    1 B：首样本已定基线 */
+    uint8_t        blank;        /*    1 B：伪迹空白态 */
+} ecg_restore_ctx;
+
+void   ecg_restore_ctx_chain_init(ecg_restore_ctx *c);      /* 只碰 dc/flt，不复位会话态 */
+void   ecg_restore_ctx_session_start(ecg_restore_ctx *c);   /* 只复位会话态，不碰 dc/flt */
+double ecg_restore_ctx_process(ecg_restore_ctx *c, int32_t x_raw);
+
+/* 单实例设置/查询（步1 只有 CH1；步2 由 Ads1293 层的 setter 同时作用于两路）
+ * ⚠ `set_notch`/`set_mode` 的**语义与瞬态完全沿用** ecg_filter_f64_*（DC 预置，不是清零），
+ *   它们只是把同一个调用落到某个 ctx 的 flt 上。 */
+void   ecg_restore_ctx_set_notch(ecg_restore_ctx *c, int on);
+void   ecg_restore_ctx_set_mode(ecg_restore_ctx *c, int mon);
+int    ecg_restore_ctx_get_notch(const ecg_restore_ctx *c);
+int    ecg_restore_ctx_get_mode(const ecg_restore_ctx *c);
+const char *ecg_restore_ctx_topmost_name(const ecg_restore_ctx *c);
+
+/* CH1 实例句柄（定义在 fast_restore_snippet.c；整个工程只有它一处定义） */
+ecg_restore_ctx *ecg_restore_ctx_ch1(void);
+
+/* ---- CH1 兼容包装（签名/语义**逐字不变**，`ads1293.c` 调用点无需改） ---- */
 double ecg_restore_process(int32_t x_raw); /* 去直流后的值 -> 原始 ADS1293 24-bit 码 */
 void   ecg_restore_start(void);            /* ★T146：START 钩子（复位 5 个 static + 装载静默窗）*/
+void   ecg_restore_chain_init(void);        /* ★T239：链初始化（dc_block + f64） */
+
+/* =========================================================================
+ * ★T239 步1 的**临时**验证开关（默认 0，验收完即删）
+ *
+ * 打开后 `fast_restore_snippet.c` 会再编进一份**旧实现原样拷贝**
+ * （`ecg_restore_process_ref()` + 自己的 r_dc/r_flt + 5 个 static），
+ * 由 `ads1293_raw_popoutput()` 每样本两路并跑、`memcmp` 比 double 的位模式。
+ *
+ * 判据：`test abstat` 的 `mismatch == 0` 且 `total >= 100000`，覆盖
+ *   notch on/off、mode diag/mon、raw853 on/off、STOP→START、一次伪迹空白。
+ * 🛑 打开后每样本滤波耗时翻倍（≈145 µs → ≈290 µs），**只用于验证，不可出厂**。
+ * 用法：把下面这个 0 改成 1 → 重新构建 → 测 → 改回 0 → 再构建。
+ * ========================================================================= */
+#ifndef ECG_RESTORE_AB_VERIFY
+#define ECG_RESTORE_AB_VERIFY   0
+#endif
+
+#if ECG_RESTORE_AB_VERIFY
+void   ecg_restore_ref_chain_init(void);
+void   ecg_restore_ref_start(void);
+void   ecg_restore_ref_set_notch(int on);
+void   ecg_restore_ref_set_mode(int mon);
+double ecg_restore_process_ref(int32_t x_raw);   /* = 旧实现的逐字拷贝 */
+void   ecg_restore_ab_reset(void);
+extern uint32_t g_ab_total;      /* 参与比较的样本数 */
+extern uint32_t g_ab_mismatch;   /* 位模式不一致的样本数（必须为 0） */
+#endif
+
 #ifdef __cplusplus
 }
 #endif

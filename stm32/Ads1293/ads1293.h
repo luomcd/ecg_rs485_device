@@ -161,6 +161,19 @@ void     ads1293_set_ch2(uint32_t on);
 uint32_t ads1293_ch2_is_on(void);
 uint8_t  ads1293_status_byte(void);
 
+/* ---- ★T239（2026-11-12）：滤波链设置/查询的设备层入口 --------------------
+ * 引入原因：`g_dc`/`f64` 两个全局已并入 `ecg_restore_ctx`（Filter/ecg_filter.h），
+ *   分派层（vcomcmd.c）不能再直写滤波实例；同时**实例扇出必须集中一处**，
+ *   否则步2 加 CH2 时必然漏设某一路（T239 §4.2）。
+ * 🛑 步2 落 CH2 时，改点**只在这里**：这 5 个函数内部同时作用于 CH1 与 CH2 的 ctx。
+ * ⚠ 语义/瞬态与 `ecg_filter_f64_set_notch/set_mode` 完全一致（DC 预置，不是清零）；
+ *   ACK 仍只靠 STA.bit0/bit1 体现（协议 §5.1 不加门、不回快照）。 */
+void     ads1293_set_notch(int on);      /* 0 = 旁路陷波组 ／ 非0 = 开启 */
+void     ads1293_set_mode(int mon);      /* 0 = diag(LP2@250) ／ 非0 = mon(LP2@45) */
+int      ads1293_notch_is_on(void);      /* 运行期读 CH1 ctx，1 = 开 */
+int      ads1293_mode_is_mon(void);      /* 运行期读 CH1 ctx，1 = mon */
+const char *ads1293_topmost_name(void);  /* 运行期第 15 节实读自证：LP2@250(diag)/LP2@45(mon) */
+
 /* ---- ★T232（2026-11-11）LOD 锁存状态机 ----------------------------------
  * 手册 §8.3.24：0x18~0x1E 的错误位是「锁存 + 读后清零」⇒ 逐样本读会把锁存吃掉。
  * 因此改为低频轮询 + 软件锁存 + 非对称防抖。

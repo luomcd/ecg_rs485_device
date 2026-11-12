@@ -10,7 +10,11 @@
 
 extern void printf_msg(const char *format,...);
 extern void queue_n_test(void);
-extern ecg_filter_f64 f64;   /* 定义在 Ads1293/ads1293.c:32（当前唯一滤波实例） */
+/* ★T239（2026-11-12）：原 `extern ecg_filter_f64 f64;` **已删除**。
+ *   滤波实例不再是全局 —— 统一走 `ads1293.h` 导出的
+ *   `ads1293_set_notch/set_mode/notch_is_on/mode_is_mon/topmost_name()`。
+ *   🛑 别在本文件重新 extern 任何滤波实例：那会绕过"设置扇出集中一处"的约束，
+ *     步2 加 CH2 时必然漏设一路（T239 §4.2）。 */
 
 
 volatile uint8_t   VCOM_RxData = 0;
@@ -339,7 +343,7 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
     if( argc== 2 && memcmp(argv[1],"notch",5)==0)
     {
         printf_msg("notch:%s profile:%s\r\n",
-                   ecg_filter_f64_notch_is_on(&f64) ? "on" : "off",
+                   ads1293_notch_is_on() ? "on" : "off",
                    ECG_PROFILE_NAME);
         return;
     }
@@ -347,13 +351,13 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
     {
         if( memcmp(argv[2],"on",3)==0)
         {
-            ecg_filter_f64_set_notch(&f64, 1);
+            ads1293_set_notch(1);
             printf_msg("notch on\r\n");
             return;
         }
         if( memcmp(argv[2],"off",4)==0)
         {
-            ecg_filter_f64_set_notch(&f64, 0);
+            ads1293_set_notch(0);
             printf_msg("notch off\r\n");
             return;
         }
@@ -376,8 +380,8 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
     if( argc== 2 && memcmp(argv[1],"mode",4)==0)
     {
         printf_msg("mode:%s notch:%s profile:%s\r\n",
-                   ecg_filter_f64_mode_is_mon(&f64) ? "mon" : "diag",
-                   ecg_filter_f64_notch_is_on(&f64) ? "on" : "off",
+                   ads1293_mode_is_mon() ? "mon" : "diag",
+                   ads1293_notch_is_on() ? "on" : "off",
                    ECG_PROFILE_NAME);
         /* ★T92b(2026-09-22)：上面那串 `profile:` 是**编译期宏**（静态档位描述），
          *   diag/mon 两态**逐字相同**、且 mon 态它仍写 250 Hz ⇒ 不能用来判档。
@@ -385,26 +389,48 @@ void vcom_test_analysis(uint8_t* msg, uint8_t len)
          *     diag ⇒ LP2@250（b0 = 0.37672777）｜mon ⇒ LP2@45（b0 = 0.02211457），差 17.04×。
          *   出现 `??unknown` = 两者都不匹配 ⇒ 状态机错乱或内存被踩，别继续测。 */
         printf_msg("topmost[%d]: %s\r\n", ECG_SECTION_TOPMOST,
-                   ecg_filter_f64_topmost_name(&f64));
+                   ads1293_topmost_name());
         return;
     }
     if( argc== 3 && memcmp(argv[1],"mode",4)==0)
     {
         if( memcmp(argv[2],"diag",4)==0)
         {
-            ecg_filter_f64_set_mode(&f64, 0);
+            ads1293_set_mode(0);
             printf_msg("mode diag\r\n");
             return;
         }
         if( memcmp(argv[2],"mon",3)==0)
         {
-            ecg_filter_f64_set_mode(&f64, 1);
+            ads1293_set_mode(1);
             printf_msg("mode mon\r\n");
             return;
         }
         printf_msg("usage: test mode [diag|mon]\r\n");
         return;
     }
+
+#if ECG_RESTORE_AB_VERIFY
+    /* ---- ★T239 步1 临时验证：A/B 逐位比较统计（宏=1 才有）------------------------
+     * 用法：`test abstat` 看累计；`test abreset` 清零后重新计数。
+     * 判据：跑满 1~2 min 且中途覆盖 notch/mode/raw853 切换 + 一次 STOP→START 后，
+     *       `mismatch` 必须为 **0**、`total` **≥ 100000**。
+     * 🛑 这两条命令与下面的 `#if ECG_RESTORE_AB_VERIFY` 代码块**同生共死**：
+     *   验收通过后把宏改回 0（命令自动消失），并在最终提交里删掉整段。
+     * 🛑 必须带 `\r\n` 结尾，否则串口工具会把下一行接在同一行上（T163 踩过）。 */
+    if( argc== 2 && memcmp(argv[1],"abstat",6)==0)
+    {
+        printf_msg("ab: total=%u mismatch=%u\r\n",
+                   (unsigned)g_ab_total, (unsigned)g_ab_mismatch);
+        return;
+    }
+    if( argc== 2 && memcmp(argv[1],"abreset",7)==0)
+    {
+        ecg_restore_ab_reset();
+        printf_msg("ab reset\r\n");
+        return;
+    }
+#endif
 
     /* ---- 853 原始流输出开关（2026-09-20 猛哥拍板；T54）--------------------------
      * 目的：让**每个 853 样本**都进输出流（行率 500 → 853.2423 Hz），供离线
@@ -704,7 +730,7 @@ static void vcom_bin_dispatch(const volatile uint8_t *src, uint32_t len)
         break;
 
       case 0x04u:                         /* SET_MODE（协议 §5.1；★G7 2026-09-23）*/
-        /* 🛑 **不加状态门**（T106 §9k.6 待拍①）：STOP 态改 f64 无副作用
+        /* 🛑 **不加状态门**（T106 §9k.6 待拍①）：STOP 态改滤波设置无副作用
          *   （`ads1293_start()` 内的 filter_chain_init 会把 mode 写回 ECG_MODE_DEFAULT，
          *   见 P8）⇒ 加门只多一个分支。⚠ 与上面 0x10（**必须加**门）口径**相反**、
          *   与 0x03/0x01/0x02 同口径 —— 别看着 0x10 段抄门过来。
@@ -714,14 +740,16 @@ static void vcom_bin_dispatch(const volatile uint8_t *src, uint32_t len)
          * ④ ARG 非法值（≠0/1）**交给内核**（待拍④）：set_mode 内 `mon = mon ? 1 : 0`
          *   已是容错语义 ⇒ 零额外代码。
          * ACK = 下一帧**显示帧 STA.bit0** 跟随（不是快照；待拍②）—— STA 由
-         *   ads1293_status_byte() **运行期读取** f64（ads1293.c:794-811）⇒ 天然跟随。
+         *   ads1293_status_byte() **运行期读取** CH1 的滤波 ctx
+         *   （`ads1293_mode_is_mon()` ⇒ `ecg_restore_ctx_get_mode()`）⇒ 天然跟随。
+         *   ★T239 起不再有 `f64` 这个全局，读点已收敛到 ads1293.c 的访问器里。
          *   STOP 态无显示帧 ⇒ **无回执**（不是丢帧，协议 §5.1 本就只以 STA 体现）。
          * ⚠ 侧效应：换第 ECG_SECTION_TOPMOST 节系数 ＋ 对该节 DC 预置 ⇒ 波形一次
          *   瞬态台阶（~10 µV）**是设计不是缺陷**（T91 策略 B / T92b 已验收）。 */
         if (argLen != 2u) {
             return;
         }
-        ecg_filter_f64_set_mode(&f64, src[6]);
+        ads1293_set_mode(src[6]);
         break;
 
       case 0x05u:                         /* SET_NOTCH（协议 §5.1；★G7）*/
@@ -733,7 +761,7 @@ static void vcom_bin_dispatch(const volatile uint8_t *src, uint32_t len)
         if (argLen != 2u) {
             return;
         }
-        ecg_filter_f64_set_notch(&f64, src[6]);
+        ads1293_set_notch(src[6]);
         break;
 
       case 0x06u:                         /* SET_CHANNEL（协议 §5.1；★G9 2026-09-23）*/

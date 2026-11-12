@@ -36,8 +36,11 @@ extern TIM_HandleTypeDef  htim2;
 extern   bool      _bdispascii;
 extern   uint8_t   _popoutcnt;
 //ecg_filter_f32 f32;
-ecg_filter_f64  f64;
-ecg_dc_block    g_dc;
+/* ★T239 步1（2026-11-12）：`ecg_filter_f64 f64;` 与 `ecg_dc_block g_dc;` 两个全局**已删除** ——
+ *   它们连同 `fast_restore_snippet.c` 的 5 个 static 一起被搬进 `ecg_restore_ctx`（见 Filter/ecg_filter.h）。
+ *   全链状态现在只有一处持有者：`ecg_restore_ctx_ch1()`。
+ *   🛑 别在本文件再建滤波实例：ads1293.c 只负责"谁在什么时候用"，不再负责"状态住哪"。
+ *   🛑 步2 的 CH2 上下文（`s_ctx2`）是本文件唯一允许新增的第二个实例，且必须与 CH1 同批初始化。 */
 ecg_out_f32     out;
 uint32_t        ecgfilteridx;
 uint32_t        gdtover;
@@ -530,19 +533,28 @@ static void ads1293_filter_chain_init(void)
      *   按档宏化后一档一行，Σf 在 coeffs.h 里可读可查（T83 §9 / T84）。
      *
      *   各档取值：A+B（当前投产档）= 0.02（Σf=0.02，37.7% 预算）；其余档 = 0.05。
-     *   ⚠ 本值同时决定 **620 kΩ 建场/恢复时间**（τ = 1/(2π·f_min)），与 a1 是两个指标。 */
-    ecg_dc_block_init(&g_dc, ECG_DC_BLOCK_FC_HZ_F);
-    ecg_filter_f64_init(&f64);
+     *   ⚠ 本值同时决定 **620 kΩ 建场/恢复时间**（τ = 1/(2π·f_min)），与 a1 是两个指标。
+     *   ★T239（2026-11-12）：本宏的**消费点**已随 dc_block 一起搬进
+     *     `Filter/fast_restore_snippet.c` 的 `ecg_restore_ctx_chain_init()`；
+     *     宏本身仍在 coeffs.h（单一真源不变），本函数只负责"什么时候初始化"。 */
+    ecg_restore_chain_init();   /* ★T239：dc_block_init + f64_init（原为直调 g_dc/f64 两句）*/
+#if ECG_RESTORE_AB_VERIFY
+    ecg_restore_ref_chain_init();  /* 临时 A/B：旧实现参照实例，与上面同一批初始化 */
+#endif
 
     /* ★T232：每次（重新）起流把 LOD 状态机清零 —— 脱落状态属于"本次连接"，不跨段沿用 */
     ads1293_lod_state_reset();
     ecg_out_f32_init(&out);
-    ecg_restore_start();   /* ★T146：复位 fast_restore_snippet.c 的 5 个 static + 装载 START 静默窗。
+    ecg_restore_start();   /* ★T146：复位会话态（base/seen/blank/hold）+ 装载 START 静默窗。
+                            *   ★T239 起它 = ecg_restore_ctx_session_start(&s_ctx1)，语义逐字不变。
                             *   它虽是独立编译单元，但在 dc_block **上游** ⇒ 残值同样跨 STOP 存活，
                             *   属"链"的一部分。
                             *   🛑 必须写在本函数内、与上面三行同批：命令路径 0x01 /
                             *   ASCII `test afe start` / reset_afe 三条 START 入口都经这里，
                             *   写到别处必漏一条。 */
+#if ECG_RESTORE_AB_VERIFY
+    ecg_restore_ref_start();   /* 临时 A/B：参照实例的会话态与 CH1 同步复位 */
+#endif
     ecgfilteridx = 0;
     seQidx = 0;
     gdtover = 0;
@@ -1164,6 +1176,47 @@ uint32_t ads1293_ch2_is_on(void)
     return _bch2;
 }
 
+/* ---- ★T239（2026-11-12）：滤波链设置/查询的设备层入口 ------------------------
+ * 为什么这组函数在本文件、而不是 Filter/：
+ *   `g_dc`/`f64` 变成 `ecg_restore_ctx` 后，**实例的持有与"几路"由本文件决定**
+ *   （步2 会在这里再建一个 `s_ctx2`）⇒ 设置必须在这里统一扇出，才不可能漏掉某一路。
+ *
+ * 🛑 步2（CH2）落码时**必须在本组函数内同时设 s_ctx2**，否则两路滤波不同源：
+ *     notch 一路开一路关 ⇒ 形态可辨但幅度不可比；mode 不同 ⇒ 上角 250 vs 45。
+ *     ⇒ 这是"设置同步"的唯一落点，别到别处再补一份。
+ * ⚠ `ads1293_status_byte()` 的 bit0/bit1 只读**CH1**：前提正是"两路设置同步"，
+ *   由本组函数保证。若将来允许两路不同设置，bit0/bit1 的语义要重新定义。 */
+void ads1293_set_notch(int on)
+{
+    ecg_restore_ctx_set_notch(ecg_restore_ctx_ch1(), on);
+#if ECG_RESTORE_AB_VERIFY
+    ecg_restore_ref_set_notch(on);   /* 临时 A/B：参照实例同设置 */
+#endif
+}
+
+void ads1293_set_mode(int mon)
+{
+    ecg_restore_ctx_set_mode(ecg_restore_ctx_ch1(), mon);
+#if ECG_RESTORE_AB_VERIFY
+    ecg_restore_ref_set_mode(mon);   /* 临时 A/B：参照实例同设置 */
+#endif
+}
+
+int ads1293_notch_is_on(void)
+{
+    return ecg_restore_ctx_get_notch(ecg_restore_ctx_ch1());
+}
+
+int ads1293_mode_is_mon(void)
+{
+    return ecg_restore_ctx_get_mode(ecg_restore_ctx_ch1());
+}
+
+const char *ads1293_topmost_name(void)
+{
+    return ecg_restore_ctx_topmost_name(ecg_restore_ctx_ch1());
+}
+
 /* ---- ★T163：ASCII 精简档 `ascii-2` 的访问器 -----------------------------------
  * 全部只经这里访问（同 raw853 / ch2 的既有风格），`demo.c` 一行未动。 */
 
@@ -1287,27 +1340,30 @@ uint32_t ads1293_ascii2_col(uint32_t which)
 
 /* ★G2(2026-09-23)：STA 状态字节（协议 v2.2 §4）。
  *
- *   bit0 mode    0 = diag ／ 1 = mon    ← ecg_filter_f64_mode_is_mon(&f64)
- *   bit1 notch   0 = off  ／ 1 = on     ← ecg_filter_f64_notch_is_on(&f64)
+ *   bit0 mode    0 = diag ／ 1 = mon    ← ads1293_mode_is_mon()
+ *   bit1 notch   0 = off  ／ 1 = on     ← ads1293_notch_is_on()
  *   bit2 channel 0 = I    ／ 1 = I&II   ← ads1293_ch2_is_on()（★G8 起随 `test ch2` 变化）
  *   bit3 raw853  0 = off  ／ 1 = on     ← ads1293_raw853_is_on()
  *   bit4 LOD     0 = 正常 ／ 1 = 脱落    ← ★T232 起恒有效（ECG_LOD_EN=1，旧注释"恒 0"已作废）
- *   bit5~7 保留 0
+ *   bit5 CH1_INVALID 0 = 有效 ／ 1 = 无效 ← ★T232 任务3；判据见 ECG_LOD_GATE_CRIT
+ *   bit6~7 保留 0
  *
  * 🛑 硬约束（协议 §4）：**必须运行期读取，不得用编译期宏**。
  *   反例＝`profile:` 回显打的是 ECG_PROFILE_NAME 宏，T92b 已栽过（diag/mon 两态
  *   回显逐字相同、判不出档，教训注释在 vcomcmd.c:227-231）。
- * 访问器均已在位（mode_is_mon 见 Filter/ecg_filter.c，raw853_is_on 见上）⇒ 本函数零新增依赖。
+ * ★T239（2026-11-12）：bit0/bit1 的读点改走本文件的 `ads1293_mode_is_mon()` /
+ *   `ads1293_notch_is_on()` —— 因为 `f64` 已被 `ecg_restore_ctx` 取代，本函数不再直接触碰滤波实例。
+ *   运行时真值仍是 CH1 的 ctx（两路同步后与 CH2 等价，见 step2 的 setter）。
  * ⚠ G9 落 SET_CHANNEL(0x06) 时，只需把 bit2 的数据源由 `_bch2` 换成协议驱动的
  *   channel 标志（本函数结构不动）；bit4 LOD 位同理。 */
 uint8_t ads1293_status_byte(void)
 {
     uint8_t sta = 0u;
 
-    if (ecg_filter_f64_mode_is_mon(&f64)) {
+    if (ads1293_mode_is_mon()) {
         sta |= 0x01u;   /* bit0 mode  */
     }
-    if (ecg_filter_f64_notch_is_on(&f64)) {
+    if (ads1293_notch_is_on()) {
         sta |= 0x02u;   /* bit1 notch */
     }
     if (ads1293_ch2_is_on()) {
@@ -1326,6 +1382,20 @@ uint8_t ads1293_status_byte(void)
     if ((s_lod_stable & ECG_LOD_GATE_CRIT) != 0u) {
         sta |= 0x20u;   /* bit5：CH1_INVALID（POLICY=0 看 IN1|IN2／=1 看全部） */
     }
+#if ECG_RESTORE_AB_VERIFY
+    /* ★T239 步1 临时：把 A/B 结果塞进**保留位**，因为本板 ASCII 控制台走 UART5→ESP32，
+     *   拿不到 `test abstat` 的回显；而 ESP32 的 `diag` 会把 STA 原样打成 `raw=0x..`
+     *   ⇒ 这是无控制台条件下唯一的读数通道。
+     *     bit6 = 1 ⇒ 出现过 double 位模式不一致（**FAIL**，一条都不许有）
+     *     bit7 = 1 ⇒ 累计比较样本数已达 100000（判据的"量"达标）
+     *   ⚠ 与 A/B 代码同生共死：宏=0 时 bit6/7 仍是保留位 0。 */
+    if (g_ab_mismatch != 0u) {
+        sta |= 0x40u;   /* bit6：A/B mismatch */
+    }
+    if (g_ab_total >= 100000u) {
+        sta |= 0x80u;   /* bit7：A/B 样本量达标 */
+    }
+#endif
 
     return sta;
 }
@@ -1448,14 +1518,37 @@ void ads1293_raw_popoutput(void)
         ecgfilter.ecgraw2 = ecgdata.ecgraw2;
         vlod = ecgdata.lod;
         verrsta = ecgdata.errsta;
-        #if 1
-            uint32_t t0 = DWT->CYCCNT;
-            ecgfilter.filterraw = ecg_restore_process(ecgfilter.ecgraw);
-            ecgfilter.dtcycles = DWT->CYCCNT - t0;
-            //if (ecgfilter.dtcycles > 12000u) gdtover++;   /* 12000 cyc = 150 us，超出即记一次 */
+        #if ECG_RESTORE_AB_VERIFY
+            /* ★T239 步1 临时验证：同一输入喂两套实现，比 double 的**位模式**。
+             * 旧实现的逐字拷贝见 Filter/fast_restore_snippet.c 末尾（宏=1 才编）。
+             * 判据：`test abstat` ⇒ mismatch==0 且 total≥100000。验收完本段删除。 */
+            {
+                uint32_t t0 = DWT->CYCCNT;
+                uint64_t ba;
+                uint64_t bb;
+                double a = ecg_restore_process_ref(ecgfilter.ecgraw);
+                double b = ecg_restore_process(ecgfilter.ecgraw);
+                memcpy(&ba, &a, sizeof ba);
+                memcpy(&bb, &b, sizeof bb);
+                g_ab_total++;
+                if (ba != bb) {
+                    g_ab_mismatch++;
+                }
+                ecgfilter.filterraw = b;
+                ecgfilter.dtcycles = DWT->CYCCNT - t0;
+            }
         #else
-            float  x_dc = ecg_dc_block_process(&g_dc, (float)ecgdata.ecgraw);
-            ecgfilter.filterraw    = ecg_filter_f64_process(&f64, (double)x_dc);
+            /* ★T239 步1：CH1 唯一滤波入口。签名与语义与改前逐字相同，
+             *   实现已改为 `ecg_restore_ctx_process(&s_ctx1, x)`。
+             *   ⚠ 下面 `#else` 那条直调 dc_block+f64 的旧路径**已作废删除**
+             *     —— `g_dc`/`f64` 两个全局已并入 ctx，不存在了。
+             *     需要"绕过伪迹状态机"做对照时，请用 A/B 宏（§ECG_RESTORE_AB_VERIFY）。 */
+            {
+                uint32_t t0 = DWT->CYCCNT;
+                ecgfilter.filterraw = ecg_restore_process(ecgfilter.ecgraw);
+                ecgfilter.dtcycles = DWT->CYCCNT - t0;
+                //if (ecgfilter.dtcycles > 12000u) gdtover++;   /* 12000 cyc = 150 us，超出即记一次 */
+            }
         #endif
 
         if (_braw853) {

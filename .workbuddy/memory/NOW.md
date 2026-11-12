@@ -6,14 +6,15 @@
 
 ## 1 一句话现状（2026-11-12）
 
-**LOD 线已收口（`T234` 权威 + `T236` 回归四组全过）；CH2 真实数据上传的方案已评审、已拍板，下一步＝步 1 重构 CH1。**
+**LOD 线已收口；CH2 上传方案已拍板，`T239` 步1（滤波入口上下文重构）已完成并双向 A/B 验收通过。下一步＝步2 接 CH2。**
 
 | 11-12 净增量 | 结论 |
 |---|---|
 | `T236` 回归 4 组 | A 5/6（A1 因日志级别抓不到）、**B 9/9**、C1/C3 过、**D1 30 min peaks 零增量 / 20.0 fps / crc 0** |
 | 🛑 误判纠正 | "ch2 后流拉不回来"**不存在** —— 真因＝会话开头没 `485-start` ＋ ESP32 会话间重启过（`uptime≈125 s`） |
 | `T237` 方案 / `T238` 评审 | 评审批准方案 B，**暂不批准直接落码**（8 条 P0/P1） |
-| **`T239` 处置（已拍板）** | 见下；**零源码改动，等授权开步 1** |
+| **`T239` 处置（已拍板）** | 驳回 P0-3、升级 P1-4、补 N1~N3，4 项拍板见下 |
+| **`T240` 步1 已完成（11-12）** | `g_dc/f64`+5 static → `ecg_restore_ctx s_ctx1`(976 B)；**CH1 逐位不变**（板端 A/B `mismatch=0` ＋ 主机 40 万样本 `mismatch=0`）；SRAM **−16 B** / Flash **+249 B**；固件已回默认档 |
 
 **4 项拍板**
 1. **默认双通道**（`_bch2` 初值 → `1u`）＋ `ch2 off` 作回退 ⇒ **驳回 T238 P0-3**
@@ -26,8 +27,19 @@
 - 🛑 CH2 **不做 24-bit 符号扩展**（照抄 `ads1293.c:604-607` 的故意注释口径）
 - 🛑 `ch2_out` 落 `@18` 吃 pad ⇒ `ecg_filter_t` 仍 **32 B**
 
-**三步**：步1 ctx 重构 + A/B 验证 → 步2 CH2 链 + 默认双通道 → 步3 阶段①/②看波形。
+**三步**：~~步1 ctx 重构 + A/B 验证~~ ✅ → **步2 CH2 链 + 默认双通道** → 步3 阶段①/②看波形。
+⚠ 步2 开工前先跑一次 A/B（CH1 必须仍 `mismatch=0`）当起点基线。
 **押后**：C-3 门控（已拍"暂不做"）、`0x08` 电流档扫描。
+
+**🛑 环境硬事实（11-12 实测，别再找错端口）**
+- 本板 **ASCII 控制台不在 PC 侧**：`comm_port.h:49 ECG_COMM_PORT=UART5` ⇒ `printf_msg` 全走
+  UART5→RS485→**ESP32**。COM3=ST-Link VCP（无字节）／COM33/34=J-Link／**COM35=ESP32 `cardiolite>`**；
+  STM32 原生 USB 口**没插**。⇒ 要读 STM32 状态只能经 ESP32（`485-stat` 的 `raw=0x..`／STA 保留位）。
+- 🛑 **`stop`→改 notch/mode→`start` 无效**：`filter_chain_init` 的 `f64_init` 会把 notch 写回"开"、
+  mode 写回 diag（fail-safe）⇒ **必须先 START 再改设置**。
+- 🛑 **`485-send` 每发一条会打坏上行流 1~3 个 `crc_err`** ⇒ 命令偶尔静默丢，重发即中。
+- 烧录用 `STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe -c port=SWD mode=UR reset=HWrst -w <hex> -v -rst`
+  （`ST-LINK_CLI.exe` 在本环境会被 SIGTERM 打断）。
 
 <details><summary>11-11 / 11-12 前半（LOD 收口，已完成）</summary>
 
@@ -53,23 +65,6 @@
 **可疑现象（原缺陷 B）判定不做**（0.0055 次/min，加门代价 133 倍）。
 
 </details>
-
----
-
-## 2 今日净增量（11-10）
-
-| 项 | 结论 | 落点 |
-|---|---|---|
-| **T224** | 真因＝回溯路径 `locate_rpeak` 覆盖不足；两种失效形态（`found=false` 误差 9 / 部分覆盖静默选错误差 27） | `docs/T224_*` |
-| **T225** | 第三方评审：条件批准 P3A，只落 fid、不并入缺陷 B | `docs/T225_*` |
-| **T226** | P3A 落码 + 上板：90 bpm **2.50→0.35**、120 bpm **0.22**；`rpeak diag` 上线 | `docs/T226_*` |
-| **T227 v0.7** | MIT 48 条：主口径完整数据、首秒根因三层、加基线五组实测、P4-e/P4-f 待办 | `docs/T227_*` |
-| **T228** | MIT 上板测试操作手册（batch vs mit-run、三道闸门、8 条故障排查、§9 MIT 覆盖不到的东西） | `docs/T228_*` |
-| 固件 | `ecg_rpeak.c/h` fid + 诊断；`ecg_pipeline` + `cli_console` 加 `rpeak diag` | commit `5002ef9` |
-| 工具 | `mitbih_compare.py`（48 条，`--no-trim`）、`mitrun.py`（板端 8x 抽样）、`esp_run.py`（`--stem` 通用回传）、`replay_rpeak.py`、`rp_compare.py`、`pc485_cmd.py`、`pc_sweep_replay.py` | `esp32/485tools/` |
-
-**板端三层验证全部通过**：batch 3 条 + `mit-run` 8× 5 条，**逐峰与 PC 完全一致，`dropped` 全 0**
-⇒ **xtensa 单精度与 x86 逐位一致，编译器/FPU 这层关闭**。
 
 ---
 

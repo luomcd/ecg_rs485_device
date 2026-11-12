@@ -87,17 +87,76 @@
 #error "ECG_RESTORE_START_SETTLE_SAMPLES 取值非法（允许 0 ~ 100000）"
 #endif
 
-/* ---- 你的链状态（若已有同名变量，用你自己的） ---- */
-extern ecg_dc_block   g_dc;//g_dcb;
-extern ecg_filter_f64 f64;//g_flt;
+/* ---- ★T239 步1（2026-11-12）：链状态打包成**通道上下文** -------------------
+ * 旧写法（作废，留档说明改了什么）：
+ *     extern ecg_dc_block   g_dc;   // 定义在 Ads1293/ads1293.c
+ *     extern ecg_filter_f64 f64;
+ *     static double   s_base;  static int s_seen, s_blank;
+ *     static uint16_t s_hold;  static uint32_t s_restore_cnt, s_startup;
+ * 打包进 ecg_restore_ctx 后 ⇒ 步2 的 CH2 用**同一段代码**、各自持状态（T239 §4.2）。
+ * 🛑 本步只建 s_ctx1 一个实例：运算顺序、每个系数**逐位不变**，
+ *   验收方式＝同固件 A/B 双跑比 double 位模式（T239 §4.1 / 宏 ECG_RESTORE_AB_VERIFY）。 */
+static ecg_restore_ctx s_ctx1;
 
-/* ---- 检测器状态（只能有一份；多通道需改成数组/结构体） ---- */
-static double   s_base       = 0.0;
-static int      s_seen       = 0;
-static int      s_blank      = 0;
-static uint16_t s_hold       = 0u;
-static uint32_t s_restore_cnt = 0u;   /* 统计：进入伪迹态次数 */
-static uint32_t s_startup     = 0u;   /* T146：START 静默窗剩余样本数（每次 START 由 ecg_restore_start 装载）*/
+ecg_restore_ctx *ecg_restore_ctx_ch1(void)
+{
+    return &s_ctx1;
+}
+
+/* ---- 链初始化：只碰 dc/flt 的系数与节点状态 --------------------------------
+ * ≡ 旧 ads1293_filter_chain_init() 里那两句
+ *     ecg_dc_block_init(&g_dc, ECG_DC_BLOCK_FC_HZ_F);
+ *     ecg_filter_f64_init(&f64);
+ * ⚠ 搬进本文件是因为 dc/flt 现在住在 ctx 里；**宏 `ECG_DC_BLOCK_FC_HZ_F` 仍是单一真源**
+ *   （按档定义在 Filter/ecg_filter_coeffs.h），没有在别处重新硬编码。 */
+void ecg_restore_ctx_chain_init(ecg_restore_ctx *c)
+{
+    ecg_dc_block_init(&c->dc, ECG_DC_BLOCK_FC_HZ_F);
+    ecg_filter_f64_init(&c->flt);
+}
+
+void ecg_restore_chain_init(void)
+{
+    ecg_restore_ctx_chain_init(&s_ctx1);
+}
+
+/* ---- 单实例设置/查询（转落到 ctx->flt，语义与瞬态不变） ------------------- */
+void ecg_restore_ctx_set_notch(ecg_restore_ctx *c, int on)
+{
+    ecg_filter_f64_set_notch(&c->flt, on);
+}
+
+void ecg_restore_ctx_set_mode(ecg_restore_ctx *c, int mon)
+{
+    ecg_filter_f64_set_mode(&c->flt, mon);
+}
+
+int ecg_restore_ctx_get_notch(const ecg_restore_ctx *c)
+{
+    return ecg_filter_f64_notch_is_on(&c->flt);
+}
+
+int ecg_restore_ctx_get_mode(const ecg_restore_ctx *c)
+{
+    return ecg_filter_f64_mode_is_mon(&c->flt);
+}
+
+const char *ecg_restore_ctx_topmost_name(const ecg_restore_ctx *c)
+{
+    return ecg_filter_f64_topmost_name(&c->flt);
+}
+
+/* ---- 会话态复位（**逐字**等价旧 ecg_restore_start 的语义） -----------------
+ * 复位 base/seen/blank/hold + 装载 START 静默窗。
+ * 🛑 `restore_cnt` 是统计量，**不清**（沿用旧行为，别"顺手修"）。 */
+void ecg_restore_ctx_session_start(ecg_restore_ctx *c)
+{
+    c->base    = 0.0;
+    c->seen    = 0u;
+    c->blank   = 0u;
+    c->hold    = 0u;
+    c->startup = (uint32_t)ECG_RESTORE_START_SETTLE_SAMPLES;
+}
 
 /* ---- T146 (2026-09-28)：START 钩子 ----------------------------------------------
  * 由 Ads1293/ads1293.c 的 ads1293_filter_chain_init() 在**每次 START** 调用
@@ -111,16 +170,15 @@ static uint32_t s_startup     = 0u;   /* T146：START 静默窗剩余样本数�
  *   s_seen/s_blank/s_hold 停在旧状态）⇒ 冷启动走"先 200 ms 空白态"、
  *   热启动直接出波 ⇒ **START 后行为不一致**。
  *
- * 内容：① 清 s_base/s_seen/s_blank/s_hold（s_restore_cnt 是统计量，不清）
- *       ② 装载静默窗 s_startup = ECG_RESTORE_START_SETTLE_SAMPLES（宏=0 即退化为"纯复位"）
- * ⚠ 链内 dc_block/f64/out 的复位由 ads1293_filter_chain_init 自己负责，此处不重复。 */
+ * 内容：① 清 base/seen/blank/hold（restore_cnt 是统计量，不清）
+ *       ② 装载静默窗 startup = ECG_RESTORE_START_SETTLE_SAMPLES（宏=0 即退化为"纯复位"）
+ * ⚠ 链内 dc_block/flt/out 的复位由 ads1293_filter_chain_init 自己负责，此处不重复
+ *   （T239 起：dc/flt 在 `ecg_restore_ctx_chain_init()`，resampler 在 ads1293.c）。
+ * ⚠ T239 步1：上面这 5 个 static 已并入 `ecg_restore_ctx`，本函数即
+ *   `ecg_restore_ctx_session_start(&s_ctx1)` 的薄包装，语义逐字不变。 */
 void ecg_restore_start(void)
 {
-    s_base    = 0.0;
-    s_seen    = 0;
-    s_blank   = 0;
-    s_hold    = 0u;
-    s_startup = (uint32_t)ECG_RESTORE_START_SETTLE_SAMPLES;
+    ecg_restore_ctx_session_start(&s_ctx1);
 }
 
 /* =========================================================================
@@ -160,69 +218,78 @@ void ecg_restore_start(void)
  * 关联：技能 `firmware-change-verify §4.145`；报告 `tools/_t169/T196_测试方法讨论_伪迹空白机制归因_2026-10-14.md`。
  * ========================================================================= */
 
-/* 每样本调用一次（主循环 drain 队列时）。返回滤波输出(code 域)，伪迹空白期间返回 0。 */
-//static 
-double ecg_restore_process(int32_t x_raw)
+/* 每样本调用一次（主循环 drain 队列时）。返回滤波输出(code 域)，伪迹空白期间返回 0。
+ * ★T239 步1：本函数由 `ecg_restore_process(x)` **改名为** `ecg_restore_ctx_process(c,x)`，
+ *   逐字搬移 —— 唯一的改动是把 `s_*` / `g_dc` / `f64` 换成 `c->*`。
+ *   🛑 运算顺序、常数、分支结构**一律不动**：这一层是"逐位不变"的根基，别在此处顺手优化。 */
+double ecg_restore_ctx_process(ecg_restore_ctx *c, int32_t x_raw)
 {
     const double x = (double)x_raw;
 
     /* ★T146-F1：首样本即基线。
-     *   原实现只在"伪迹判据"里用 s_base，而 s_base 初值 0，原始码域直流 ~6.07e6
+     *   原实现只在"伪迹判据"里用 base，而 base 初值 0，原始码域直流 ~6.07e6
      *   ⇒ 第 2 个样本 dev ≈ 6.07e6 ≫ 50 mV 阈值(445,633 codes)
      *   ⇒ **冷启动（上电后第一次 START）必然误进 200 ms 空白态**，而热启动不会
      *   ⇒ 这是"START 后行为不一致"的第一条确定性来源。 */
-    if (!s_seen) {
-        s_base = x;
-        s_seen = 1;
+    if (!c->seen) {
+        c->base = x;
+        c->seen = 1u;
     }
 
     /* ★T146-F3：START 静默窗。期间输出 0（屏幕中央线）且**不喂链** ——
      *   链此刻是 ads1293_filter_chain_init 刚复位过的干净态（dc_block warmed=0），
      *   窗末第一个样本自然成为跟踪起点（AFE 已稳定 ⇒ 起点落在平台值上 ⇒ 不再单向漂移）。
-     *   s_base 在窗内用慢基线持续跟踪，保证窗末 dev 判据不会误触发。 */
-    if (s_startup > 0u) {
-        s_base += (double)ECG_ALPHA_SLOW * (x - s_base);
-        s_startup--;
+     *   base 在窗内用慢基线持续跟踪，保证窗末 dev 判据不会误触发。 */
+    if (c->startup > 0u) {
+        c->base += (double)ECG_ALPHA_SLOW * (x - c->base);
+        c->startup--;
         return 0.0;
     }
 
-    if (s_seen) {
-        const double dev = (x > s_base) ? (x - s_base) : (s_base - x);
+    if (c->seen) {
+        const double dev = (x > c->base) ? (x - c->base) : (c->base - x);
 
-        if (s_blank) {
+        if (c->blank) {
             if (dev > ECG_RESTORE_TH_CODES) {
-                s_hold = ECG_BLANK_HOLD;          /* 伪迹仍在移动 -> 续期 */
+                c->hold = ECG_BLANK_HOLD;          /* 伪迹仍在移动 -> 续期 */
             }
-            s_base += (double)ECG_ALPHA_FAST * (x - s_base);
+            c->base += (double)ECG_ALPHA_FAST * (x - c->base);
 
-            if (s_hold > 0u) {
-                s_hold--;
+            if (c->hold > 0u) {
+                c->hold--;
                 return 0.0;                       /* 空白：输出 0，不给链喂数据 */
             }
             /* 平静下来 -> 整链只重置这一次，从干净基线恢复 */
-            ecg_dc_block_reset(&g_dc);
-            ecg_filter_f64_reset(&f64);
-            s_base  = x;
-            s_blank = 0;
-            s_restore_cnt++;
+            ecg_dc_block_reset(&c->dc);
+            ecg_filter_f64_reset(&c->flt);
+            c->base  = x;
+            c->blank = 0u;
+            c->restore_cnt++;
         /* 🛑 T196p：本行是**唯一触发点**，只用**一个样本**比门限 ⇒ **单样本坏码即可复位整链**。
          *   护栏方案（连续 N 样本同向超限才触发）见本函数上方的「T196p 源码备注」，尚未落码。 */
         } else if (dev > ECG_RESTORE_TH_CODES) {
-            s_blank = 1;
-            s_hold  = ECG_BLANK_HOLD;
-            ecg_dc_block_reset(&g_dc);           /* warmed=0 -> 下个样本自动当新基线 */
-            ecg_filter_f64_reset(&f64);         /* ★ 必须整链清(ECG_NUM_SECTIONS 节)，只清 dc_block 无效 */
-            s_base  = x;
-            s_restore_cnt++;
+            c->blank = 1u;
+            c->hold  = ECG_BLANK_HOLD;
+            ecg_dc_block_reset(&c->dc);           /* warmed=0 -> 下个样本自动当新基线 */
+            ecg_filter_f64_reset(&c->flt);         /* ★ 必须整链清(ECG_NUM_SECTIONS 节)，只清 dc_block 无效 */
+            c->base  = x;
+            c->restore_cnt++;
             return 0.0;
         } else {
-            s_base += (double)ECG_ALPHA_SLOW * (x - s_base);
+            c->base += (double)ECG_ALPHA_SLOW * (x - c->base);
         }
     }
-    s_seen = 1;
+    c->seen = 1u;
 
-    return ecg_filter_f64_process(&f64,
-                                  (double)ecg_dc_block_process(&g_dc, (float)x_raw));
+    return ecg_filter_f64_process(&c->flt,
+                                  (double)ecg_dc_block_process(&c->dc, (float)x_raw));
+}
+
+/* ---- CH1 兼容包装（签名与语义逐字不变；`ads1293.c` 调用点零改动） ----
+ * ⚠ 全工程只有这一个实例。步2 的 CH2 走 `ecg_restore_ctx_process(&s_ctx2, ...)`。 */
+double ecg_restore_process(int32_t x_raw)
+{
+    return ecg_restore_ctx_process(&s_ctx1, x_raw);
 }
 
 /* =========================================================================
@@ -296,3 +363,113 @@ int main(void)
     return (s_seen && (y == y) && (s_restore_cnt < 0xFFFFFFFFu) && (t_restore_cnt < 0xFFFFFFFFu)) ? 0 : 1;
 }
 #endif
+
+/* =========================================================================
+ * ★T239 步1 的**临时**验证实现（`ECG_RESTORE_AB_VERIFY == 1` 才编进来）
+ *
+ * 目的：证明"打包成 ctx"没有改变任何数值。
+ * 做法：这里保留一份**旧实现的逐字拷贝**（`r_dc`/`r_flt` + 5 个 static + 同名逻辑），
+ *   由 `ads1293_raw_popoutput()` 每样本两路并跑，`memcmp` 比较两个 `double` 的**位模式**。
+ *
+ * 🛑 这个文件里出现两份几乎相同的代码是**故意的**，不要"去重" ——
+ *   去重后就不再有独立参照，A/B 也就失去意义。验收完**整段删除**。
+ * 🛑 默认不编（宏=0）⇒ 出厂固件零冗余、零额外 CPU。
+ * ========================================================================= */
+#if ECG_RESTORE_AB_VERIFY
+
+static ecg_dc_block   r_dc;
+static ecg_filter_f64 r_flt;
+static double   r_base        = 0.0;
+static int      r_seen        = 0;
+static int      r_blank       = 0;
+static uint16_t r_hold        = 0u;
+static uint32_t r_restore_cnt = 0u;
+static uint32_t r_startup     = 0u;
+
+uint32_t g_ab_total    = 0u;
+uint32_t g_ab_mismatch = 0u;
+
+void ecg_restore_ab_reset(void)
+{
+    g_ab_total    = 0u;
+    g_ab_mismatch = 0u;
+}
+
+void ecg_restore_ref_chain_init(void)
+{
+    ecg_dc_block_init(&r_dc, ECG_DC_BLOCK_FC_HZ_F);
+    ecg_filter_f64_init(&r_flt);
+}
+
+void ecg_restore_ref_start(void)
+{
+    r_base    = 0.0;
+    r_seen    = 0;
+    r_blank   = 0;
+    r_hold    = 0u;
+    r_startup = (uint32_t)ECG_RESTORE_START_SETTLE_SAMPLES;
+}
+
+void ecg_restore_ref_set_notch(int on)
+{
+    ecg_filter_f64_set_notch(&r_flt, on);
+}
+
+void ecg_restore_ref_set_mode(int mon)
+{
+    ecg_filter_f64_set_mode(&r_flt, mon);
+}
+
+/* ---- 以下为 T239 之前 `ecg_restore_process()` 的**逐字拷贝**（只换了变量名） ---- */
+double ecg_restore_process_ref(int32_t x_raw)
+{
+    const double x = (double)x_raw;
+
+    if (!r_seen) {
+        r_base = x;
+        r_seen = 1;
+    }
+
+    if (r_startup > 0u) {
+        r_base += (double)ECG_ALPHA_SLOW * (x - r_base);
+        r_startup--;
+        return 0.0;
+    }
+
+    if (r_seen) {
+        const double dev = (x > r_base) ? (x - r_base) : (r_base - x);
+
+        if (r_blank) {
+            if (dev > ECG_RESTORE_TH_CODES) {
+                r_hold = ECG_BLANK_HOLD;
+            }
+            r_base += (double)ECG_ALPHA_FAST * (x - r_base);
+
+            if (r_hold > 0u) {
+                r_hold--;
+                return 0.0;
+            }
+            ecg_dc_block_reset(&r_dc);
+            ecg_filter_f64_reset(&r_flt);
+            r_base  = x;
+            r_blank = 0;
+            r_restore_cnt++;
+        } else if (dev > ECG_RESTORE_TH_CODES) {
+            r_blank = 1;
+            r_hold  = ECG_BLANK_HOLD;
+            ecg_dc_block_reset(&r_dc);
+            ecg_filter_f64_reset(&r_flt);
+            r_base  = x;
+            r_restore_cnt++;
+            return 0.0;
+        } else {
+            r_base += (double)ECG_ALPHA_SLOW * (x - r_base);
+        }
+    }
+    r_seen = 1;
+
+    return ecg_filter_f64_process(&r_flt,
+                                  (double)ecg_dc_block_process(&r_dc, (float)x_raw));
+}
+
+#endif /* ECG_RESTORE_AB_VERIFY */
